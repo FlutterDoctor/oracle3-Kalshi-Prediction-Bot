@@ -33,18 +33,21 @@
 
 | Date | Update |
 |------|--------|
+| **2026-03-28** | v1.1.0 — Wang Transform pricing engine (Yang 2026), MLE estimator, model Greeks, Kelly sizing, correlation-aware risk, edge-weighted allocation |
 | **2026-03-09** | v1.0.0 released — 8 arbitrage strategies, market relation graph, SpreadExecutor, engine control |
 | **2026-03-04** | Live trading dashboard with real-time equity curve and 8 on-chain feature cards |
 | **2026-02-28** | Initial release — trading engine, multi-exchange support, AI agent strategies |
 
 ## Key Features
 
-- **8 arbitrage strategies** — 6 constraint-based (cross-market, exclusivity, implication, conditional, event-sum, structural) + 2 statistical (cointegration spread, lead-lag) with formal mathematical invariants
+- **Wang Transform pricing engine** — empirically calibrated from 291K+ contracts across 6 platforms (Yang 2026), decomposes market prices into physical probability + risk premium with exact coefficients, MLE estimator, and model Greeks
+- **10 trading strategies** — 6 constraint-based arb + 2 statistical arb + 2 model-driven (fair value divergence, premium lifecycle decay)
+- **Model-informed trading infrastructure** — Kelly sizing with Wang-derived edge, edge-weighted multi-strategy allocation, correlation-aware risk management
 - **Multi-exchange** — Solana/DFlow, Polymarket, Kalshi with cross-platform arbitrage
 - **AI + Quant hybrid** — LLM agent strategies (OpenAI Agents SDK + LiteLLM) alongside adaptive quantitative strategies
 - **On-chain execution** — native Solana tx signing, Jito MEV protection, flash loan arbitrage, atomic multi-leg trades
 - **Safe multi-leg** — SpreadExecutor with automatic LIFO unwind on partial fills; no naked positions
-- **Market relation graph** — persistent knowledge graph with quantitative validation (cointegration, ADF, hedge ratio)
+- **Market relation graph** — persistent knowledge graph with quantitative validation (cointegration, ADF, hedge ratio, distortion calibration)
 - **Dual-layer risk** — local limits + Solana `simulateTransaction` pre-flight check
 - **On-chain audit trail** — every trade logged via Memo program + agent reputation scoring (0–100)
 - **Engine control** — Unix socket runtime control (pause/resume/killswitch) without process restart
@@ -64,6 +67,12 @@
  │  Agent Strategy │         │   Quant Strategy    │       │ Arbitrage Suite   │
  │  (LLM + Tools)  │         │  (Momentum/MR/MM)   │       │ (8 strategies)    │
  └────────┬────────┘         └──────────┬──────────┘       └─────────┬─────────┘
+          │                             │                             │
+          │               ┌─────────────▼──────────────┐              │
+          │               │  Probabilistic Fair Value   │              │
+          │               │  Distortion · Calibrator ·  │              │
+          │               │  Premium Tracker · Scorer   │              │
+          │               └─────────────┬──────────────┘              │
           └─────────────────────────────┼─────────────────────────────┘
                                         │
                     ┌───────────────────▼───────────────────────────┐
@@ -108,6 +117,70 @@
 
 Every strategy uses a position state machine, fee-aware edge calculation, cooldown windows, and fill-guarded transitions. See [Architecture docs](https://yichengyang-ethan.github.io/oracle3/) for details.
 
+## Wang Transform Pricing Engine
+
+Oracle3 integrates the pricing framework from [Yang (2026)](https://github.com/YichengYang-Ethan/prediction-market-pricing), *"Pricing Prediction Markets: Risk Premiums, Incomplete Markets, and a Decomposition Framework"*, which decomposes market prices into **physical probability** and **risk premium** via a probit-space distortion calibrated on 291,309 contracts across 6 platforms:
+
+```
+p_market = Φ(Φ⁻¹(p_physical) + λ)    where λ is estimated via MLE
+```
+
+### Empirical Results (from the paper)
+
+| Platform | N | λ | SE | Interpretation |
+|----------|---|---|---|----------------|
+| Polymarket | 13,738 | 0.166 | 0.011 | A 50% event trades at ~57¢ (7¢ risk premium) |
+| Kalshi | 271,699 | 0.187 | 0.003 | Slightly higher premiums than Polymarket |
+| Metaculus | 1,845 | 0.287 | 0.033 | Forecasting platform, higher premiums |
+| Manifold | 1,681 | **-0.218** | 0.032 | Play-money: *underpriced* (natural negative control) |
+
+**Critical alpha insight**: very-high-volume markets (>$10K) have **λ ≈ 0** — the premium is already competed away. The alpha lives in **medium-liquidity markets** ($500–$10K) where λ = 0.25–0.35.
+
+### Model-Driven Strategies
+
+| Strategy | Alpha Source | Entry Signal |
+|----------|------------|--------------|
+| **Fair Value Divergence** | Market price deviates from model fair value | net_edge > min_edge with Kelly sizing |
+| **Premium Decay** | Risk premiums shrink over contract lifetime (half-life: 33–77%) | Premium > threshold AND early lifecycle |
+
+### Pricing Architecture
+
+| Component | Purpose |
+|-----------|---------|
+| **Wang MLE** | Batch MLE with analytic gradients, sandwich SEs, clustered SEs — the paper's core estimator |
+| **Distortion Functions** | Probit, dual power, proportional hazard — 3 parameterised families |
+| **Fair Value Estimator** | Uses exact empirical coefficients: λ_i = 0.259 − 0.072·ln(V) + 0.143·ln(D) − 0.477·\|p−0.5\| |
+| **Online Calibrator** | Hybrid batch MLE + streaming EWMA with hierarchical category shrinkage |
+| **Model Greeks** | dp/dλ, Kelly fraction, edge decay rate — for sizing and risk management |
+| **Premium Tracker** | Time-varying decay: γ₁τ + γ₂τ², optimal entry tau estimation |
+| **Kelly Sizer** | Model-informed Kelly with volume-tier gating and confidence scaling |
+| **Capital Allocator** | Edge-weighted multi-strategy allocation with time decay and premium-alpha bonus |
+| **Correlation Risk** | EWMA correlation matrix, effective exposure limits, concentration gating |
+
+The **favorite-longshot bias** — longshots are overpriced by a larger multiple than favorites — emerges as a *theorem* from the probit distortion (Theorem 1 in Yang 2026), not an empirical anomaly.
+
+> **Theoretical foundation**: Yang, Y. (2026). *Pricing Prediction Markets: Risk Premiums, Incomplete Markets, and a Decomposition Framework.* Working Paper, UIUC. [[Replication package]](https://github.com/YichengYang-Ethan/prediction-market-pricing)
+
+```python
+from oracle3.pricing import WangMLE, FairValueEstimator, ProbitDistortion
+
+# 1. Estimate lambda from historical data
+mle = WangMLE()
+result = mle.fit(prices=market_prices, outcomes=resolved_outcomes)
+print(result.summary_table())  # lambda, SEs, AIC/BIC, pseudo-R²
+
+# 2. Real-time fair value with empirical coefficients
+estimator = FairValueEstimator()
+est = estimator.estimate(market_price=0.57, category='crypto', volume=5000)
+print(f'Physical prob: {est.fair_value:.3f}, premium: {est.risk_premium:.4f}')
+# → Physical prob: 0.472, premium: 0.098 (crypto has lambda ≈ 0.25)
+
+# 3. Kelly-optimal position sizing
+from oracle3.pricing.greeks import kelly_fraction
+kelly = kelly_fraction(p_market=0.57, lam=0.25, fee_rate=0.005)
+# → kelly ≈ 0.08 (8% of bankroll on this edge)
+```
+
 ## Quick Start
 
 ```bash
@@ -137,6 +210,8 @@ Open **`http://localhost:3000/live`** for the live dashboard. See [Quick Start G
 |---------|---------|-------------------|-----------|
 | Prediction markets | 3 exchanges | Polymarket only | Crypto spot/futures |
 | Constraint arbitrage | 8 strategies with formal invariants | None | None |
+| Fair value pricing | Wang MLE calibrated on 291K contracts (Yang 2026) | None | None |
+| Model-informed sizing | Kelly with Greeks, correlation risk, capital allocation | None | None |
 | On-chain atomic execution | Solana native | Off-chain | Off-chain |
 | LLM agent + quant hybrid | OpenAI Agents SDK + LiteLLM | RAG pipeline | FreqAI (ML) |
 | Multi-leg auto-unwind | SpreadExecutor (LIFO) | None | None |
