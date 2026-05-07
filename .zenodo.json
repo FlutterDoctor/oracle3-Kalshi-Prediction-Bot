@@ -1,0 +1,60 @@
+{
+  "title": "Oracle3: Autonomous Prediction Market Trading Agent",
+  "description": "Open-source Python framework that operationalizes a Wang Transform pricing engine — calibrated by hierarchical maximum-likelihood estimation on 291,309 resolved binary contracts — and drives automated trading across Kalshi, Polymarket, and Solana DFlow. Includes eight constraint-based arbitrage strategies, model Greeks, Kelly-sized execution, dual-layer risk management, and on-chain audit trails via Jito bundles and the Solana Memo program.",
+  "creators": [
+    {
+      "name": "Yang, Yicheng",
+      "affiliation": "University of Illinois Urbana-Champaign",
+      "orcid": "0009-0000-0000-0000"
+    }
+  ],
+  "upload_type": "software",
+  "license": "Apache-2.0",
+  "access_right": "open",
+  "keywords": [
+    "prediction markets",
+    "Wang Transform",
+    "favorite-longshot bias",
+    "quantitative finance",
+    "hierarchical MLE",
+    "Kelly criterion",
+    "arbitrage",
+    "Polymarket",
+    "Kalshi",
+    "Solana",
+    "DFlow",
+    "autonomous agent",
+    "algorithmic trading",
+    "Python"
+  ],
+  "communities": [
+    {"identifier": "open-source"}
+  ],
+  "related_identifiers": [
+    {
+      "scheme": "url",
+      "identifier": "https://github.com/YichengYang-Ethan/oracle3",
+      "relation": "isSupplementTo",
+      "resource_type": "software"
+    },
+    {
+      "scheme": "url",
+      "identifier": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6468338",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-workingpaper"
+    },
+    {
+      "scheme": "url",
+      "identifier": "https://github.com/YichengYang-Ethan/prediction-market-pricing",
+      "relation": "isDerivedFrom",
+      "resource_type": "software"
+    }
+  ],
+  "references": [
+    "Yang, Y. (2026). Pricing Prediction Markets: Risk Premiums, Incomplete Markets, and a Decomposition Framework. Working Paper, University of Illinois Urbana-Champaign. https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6468338",
+    "Wang, S. S. (2000). A Class of Distortion Operators for Pricing Financial and Insurance Risks. Journal of Risk and Insurance, 67(1), 15-36.",
+    "Thaler, R. H. and Ziemba, W. T. (1988). Anomalies: Parimutuel Betting Markets: Racetracks and Lotteries. Journal of Economic Perspectives, 2(2), 161-174.",
+    "Snowberg, E. and Wolfers, J. (2010). Explaining the Favorite-Long Shot Bias. Journal of Political Economy, 118(4), 723-746."
+  ],
+  "language": "eng"
+}
