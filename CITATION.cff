@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+title: 'Oracle3: Autonomous Prediction Market Trading Agent'
+message: >-
+  If you use this software, please cite both the software and the working paper.
+type: software
+authors:
+  - given-names: Yicheng
+    family-names: Yang
+    email: yy85@illinois.edu
+    affiliation: University of Illinois Urbana-Champaign
+    orcid: 'https://orcid.org/0000-0000-0000-0000'
+repository-code: 'https://github.com/YichengYang-Ethan/oracle3'
+url: 'https://yichengyang-ethan.github.io/oracle3/'
+abstract: >-
+  Oracle3 is an open-source autonomous trading agent that operationalizes the
+  Wang Transform pricing model across multiple prediction-market venues
+  (Kalshi, Polymarket, Solana DFlow). It includes a hierarchical MLE estimator
+  calibrated on 291,309 resolved contracts, eight constraint-based arbitrage
+  strategies, model Greeks, Kelly-sized execution, and on-chain Solana
+  trading via Jito bundles.
+keywords:
+  - prediction-markets
+  - wang-transform
+  - quantitative-finance
+  - hierarchical-mle
+  - kelly-criterion
+  - polymarket
+  - kalshi
+  - solana
+  - autonomous-agent
+  - arbitrage
+license: Apache-2.0
+version: 1.1.0
+date-released: '2026-05-07'
+preferred-citation:
+  type: article
+  title: >-
+    Pricing Prediction Markets: Risk Premiums, Incomplete Markets, and a
+    Decomposition Framework
+  authors:
+    - given-names: Yicheng
+      family-names: Yang
+      affiliation: University of Illinois Urbana-Champaign
+  year: 2026
+  url: 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6468338'
+  notes: 'Working paper, UIUC. SSRN abstract_id=6468338'

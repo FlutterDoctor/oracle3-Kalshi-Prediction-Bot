@@ -7,6 +7,13 @@
 [![Type Check](https://github.com/YichengYang-Ethan/oracle3/actions/workflows/mypy.yml/badge.svg)](https://github.com/YichengYang-Ethan/oracle3/actions)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+[![Discussions](https://img.shields.io/github/discussions/YichengYang-Ethan/oracle3)](https://github.com/YichengYang-Ethan/oracle3/discussions)
+[![Last Commit](https://img.shields.io/github/last-commit/YichengYang-Ethan/oracle3)](https://github.com/YichengYang-Ethan/oracle3/commits/main)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-blue)](https://yichengyang-ethan.github.io/oracle3/)
+
+## Why this exists
+
+Prediction markets price binary contracts at systematically biased levels — a true 50/50 contract typically trades around **0.57** (favorite-longshot bias, $\hat{\lambda} \approx 0.183$). Most trading bots ignore this distortion entirely. Oracle3 operationalizes a peer-reviewed pricing model, calibrated on **291,309 resolved contracts** across six venues, to systematically harvest the bias through arbitrage detection and Kelly-sized model trades.
 
 This system deploys the exact $\lambda$ estimates and covariate model from [prediction-market-pricing](https://github.com/YichengYang-Ethan/prediction-market-pricing) (Yang, 2026) as its real-time pricing engine.
 
@@ -76,6 +83,16 @@ See [docs](https://yichengyang-ethan.github.io/oracle3/) for full CLI reference.
 - **Dual-layer risk**: local position/drawdown/exposure limits + Solana `simulateTransaction` pre-flight
 - **On-chain audit trail** via Solana Memo program; Jito bundle submission for MEV protection
 - **633 tests**, ruff, mypy, codespell CI on every push
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=YichengYang-Ethan/oracle3&type=Date)](https://star-history.com/#YichengYang-Ethan/oracle3&Date)
+
+## Contributors
+
+[![Contributors](https://contrib.rocks/image?repo=YichengYang-Ethan/oracle3)](https://github.com/YichengYang-Ethan/oracle3/graphs/contributors)
+
+If oracle3 helps your research or trading, please ⭐ star the repo — it helps others find it.
 
 ## License
 
