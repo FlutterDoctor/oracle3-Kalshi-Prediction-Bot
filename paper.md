@@ -12,7 +12,7 @@ tags:
   - Kalshi
 authors:
   - name: Yicheng Yang
-    orcid: 0009-0000-0000-0000
+    orcid: 0009-0000-7973-6931
     corresponding: true
     affiliation: 1
 affiliations:
