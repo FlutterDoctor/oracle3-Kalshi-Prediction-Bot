@@ -12,6 +12,9 @@ produces a tradable, mean-reverting spread:
 
 Adapted from prediction-market-cli for oracle3's market relation system.
 
+Distortion analysis inspired by the actuarial risk measure literature
+(Wang 2000, Denneberg 1994).
+
 Requires ``numpy`` and ``statsmodels`` (oracle3 already depends on both).
 """
 
@@ -496,3 +499,141 @@ def validate_relation(
         spread_type,
     )
     return _validate_cointegration(prices_a, prices_b, significance)
+
+
+# ── Distortion-Based Analysis ────────────���───────────────────────────────
+#
+# The functions below use probit-space distortion to analyse risk premiums
+# and cross-platform calibration. Inspired by the distortion risk measure
+# literature (Wang 2000) — these provide a complementary view to the
+# structural and cointegration tests above.
+
+
+def estimate_risk_premium(
+    prices: Sequence[float],
+    outcomes: Sequence[int],
+) -> tuple[float, float]:
+    """Estimate the average risk premium (lambda) from resolved contracts.
+
+    For each resolved contract with outcome y in {0, 1} and final price p,
+    computes the implied lambda in probit space:
+
+        lambda_i = Phi^{-1}(p) - Phi^{-1}(y_smooth)
+
+    where y_smooth maps {0, 1} to {0.001, 0.999} for numerical stability.
+
+    Returns (mean_lambda, std_lambda).
+    """
+    from oracle3.pricing.distortion import _norm_ppf
+
+    lambdas: list[float] = []
+    for p, y in zip(prices, outcomes):
+        p_clamped = max(0.001, min(0.999, float(p)))
+        y_smooth = 0.999 if y == 1 else 0.001
+        lam = _norm_ppf(p_clamped) - _norm_ppf(y_smooth)
+        if math.isfinite(lam):
+            lambdas.append(lam)
+
+    if not lambdas:
+        return 0.0, 0.0
+
+    n = len(lambdas)
+    mean_lam = sum(lambdas) / n
+    if n < 2:
+        return mean_lam, 0.0
+    var = sum((lam - mean_lam) ** 2 for lam in lambdas) / (n - 1)
+    return mean_lam, math.sqrt(var)
+
+
+def cross_platform_premium_test(
+    prices_a: Sequence[float],
+    prices_b: Sequence[float],
+) -> dict[str, float]:
+    """Compare risk premium levels across two platforms for the same events.
+
+    If platform A has a higher probit-space premium than platform B,
+    it implies A is systematically more overpriced. This creates
+    a directional cross-platform arbitrage opportunity.
+
+    Returns dict with:
+    - mean_probit_a: average probit(price) for platform A
+    - mean_probit_b: average probit(price) for platform B
+    - probit_gap: mean_probit_a - mean_probit_b (positive = A overpriced)
+    - n_pairs: number of matched pairs
+    """
+    from oracle3.pricing.distortion import _norm_ppf
+
+    probit_a: list[float] = []
+    probit_b: list[float] = []
+    n = min(len(prices_a), len(prices_b))
+    for i in range(n):
+        pa = float(prices_a[i])
+        pb = float(prices_b[i])
+        if 0.01 < pa < 0.99 and 0.01 < pb < 0.99:
+            probit_a.append(_norm_ppf(pa))
+            probit_b.append(_norm_ppf(pb))
+
+    if not probit_a:
+        return {'mean_probit_a': 0.0, 'mean_probit_b': 0.0, 'probit_gap': 0.0, 'n_pairs': 0}
+
+    mean_a = sum(probit_a) / len(probit_a)
+    mean_b = sum(probit_b) / len(probit_b)
+
+    return {
+        'mean_probit_a': mean_a,
+        'mean_probit_b': mean_b,
+        'probit_gap': mean_a - mean_b,
+        'n_pairs': len(probit_a),
+    }
+
+
+def favorite_longshot_test(
+    prices: Sequence[float],
+    outcomes: Sequence[int],
+    n_bins: int = 5,
+) -> dict[str, object]:
+    """Test for the favorite-longshot bias in a set of resolved contracts.
+
+    Groups contracts into bins by market price (probability level) and
+    computes the overpricing ratio (market_price / realised_frequency)
+    per bin. Under probit distortion with lambda > 0, the overpricing
+    ratio should be monotonically decreasing in probability —
+    longshots are overpriced by a larger multiple than favorites.
+
+    Returns dict with:
+    - bins: list of (bin_midpoint, overpricing_ratio) tuples
+    - is_monotone_decreasing: whether the bias pattern holds
+    - mean_overpricing: average overpricing ratio across bins
+    """
+    if len(prices) != len(outcomes) or len(prices) < n_bins * 5:
+        return {'bins': [], 'is_monotone_decreasing': False, 'mean_overpricing': 0.0}
+
+    # Sort by price and bin
+    pairs = sorted(zip(prices, outcomes), key=lambda x: x[0])
+    bin_size = len(pairs) // n_bins
+
+    bins: list[tuple[float, float]] = []
+    for i in range(n_bins):
+        start = i * bin_size
+        end = start + bin_size if i < n_bins - 1 else len(pairs)
+        chunk = pairs[start:end]
+        if not chunk:
+            continue
+        avg_price = sum(p for p, _ in chunk) / len(chunk)
+        realised_freq = sum(y for _, y in chunk) / len(chunk)
+        ratio = avg_price / realised_freq if realised_freq > 0.01 else avg_price / 0.01
+        bins.append((avg_price, ratio))
+
+    is_monotone = True
+    for i in range(1, len(bins)):
+        if bins[i][1] > bins[i - 1][1] + 0.01:  # small tolerance
+            is_monotone = False
+            break
+
+    mean_ratio = sum(r for _, r in bins) / len(bins) if bins else 0.0
+
+    return {
+        'bins': bins,
+        'is_monotone_decreasing': is_monotone,
+        'mean_overpricing': mean_ratio,
+    }
