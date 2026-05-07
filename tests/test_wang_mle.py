@@ -15,7 +15,7 @@ import pytest
 np = pytest.importorskip('numpy')
 scipy = pytest.importorskip('scipy')
 
-from oracle3.pricing.wang_mle import (
+from oracle3.pricing.wang_mle import (  # noqa: E402
     WangMLE,
 )
 

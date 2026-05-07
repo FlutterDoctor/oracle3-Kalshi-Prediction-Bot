@@ -66,7 +66,7 @@ pre-commit = "^4.5.1"
 nbmake = "^1.5.0"
 types-setuptools = "^69.0.0.0"
 types-requests = "^2.31.0"
-ruff = "^0.3.0"
+ruff = "^0.15"
 commitizen = "^3.14.1"
 mypy = "^1.15.0"
 
@@ -192,6 +192,8 @@ max-complexity = 10
 "oracle3/strategy/market_making_strategy.py" = ["C901"]
 "oracle3/strategy/orderbook_imbalance_strategy.py" = ["C901"]
 "oracle3/strategy/contrib/debate_strategy.py" = ["C901"]
+"oracle3/strategy/contrib/fair_value_strategy.py" = ["C901"]
+"oracle3/pricing/wang_mle.py" = ["C901"]
 "oracle3/strategy/contrib/coint_spread_strategy.py" = ["C901"]
 "oracle3/strategy/contrib/conditional_arb_strategy.py" = ["C901"]
 "oracle3/strategy/contrib/cross_market_arbitrage_strategy.py" = ["C901"]
