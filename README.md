@@ -10,6 +10,7 @@
 [![Discussions](https://img.shields.io/github/discussions/YichengYang-Ethan/oracle3)](https://github.com/YichengYang-Ethan/oracle3/discussions)
 [![Last Commit](https://img.shields.io/github/last-commit/YichengYang-Ethan/oracle3)](https://github.com/YichengYang-Ethan/oracle3/commits/main)
 [![Docs](https://img.shields.io/badge/docs-mkdocs-blue)](https://yichengyang-ethan.github.io/oracle3/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20062549.svg)](https://doi.org/10.5281/zenodo.20062549)
 
 ## Why this exists
 
