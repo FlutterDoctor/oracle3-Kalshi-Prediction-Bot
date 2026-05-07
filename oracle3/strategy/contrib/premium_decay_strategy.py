@@ -293,8 +293,9 @@ class PremiumDecayStrategy(QuantStrategy):
         price_dec = Decimal(str(estimate.market_price))
         qty = self._trade_size / max(price_dec, Decimal('0.01'))
 
-        ok = await trader.place_order(trade_ticker, TradeSide.BUY, qty, price_dec)
-        if ok:
+        result = await trader.place_order(TradeSide.BUY, trade_ticker, price_dec, qty)
+        executed = result.executed
+        if executed:
             self._positions[symbol] = _DECAY_LONG
             self._entry_times[symbol] = now
             self._entry_premiums[symbol] = estimate.risk_premium
@@ -304,7 +305,7 @@ class PremiumDecayStrategy(QuantStrategy):
         self.record_decision(
             ticker_name=symbol,
             action='BUY_NO',
-            executed=ok,
+            executed=executed,
             reasoning=(
                 f'Premium decay entry: premium={estimate.risk_premium:.4f}, '
                 f'tau={tau:.2f}, fv={estimate.fair_value:.3f}, '
@@ -337,8 +338,9 @@ class PremiumDecayStrategy(QuantStrategy):
         price_dec = Decimal(str(estimate.market_price))
         qty = self._trade_size / max(price_dec, Decimal('0.01'))
 
-        ok = await trader.place_order(trade_ticker, TradeSide.SELL, qty, price_dec)
-        if ok:
+        result = await trader.place_order(TradeSide.SELL, trade_ticker, price_dec, qty)
+        executed = result.executed
+        if executed:
             self._positions[symbol] = _FLAT
             entry_premium = self._entry_premiums.pop(symbol, 0.0)
             entry_tau = self._entry_taus.pop(symbol, 1.0)
@@ -361,7 +363,7 @@ class PremiumDecayStrategy(QuantStrategy):
         self.record_decision(
             ticker_name=symbol,
             action='CLOSE_DECAY_LONG',
-            executed=ok,
+            executed=executed,
             reasoning=f'Exit ({reason}): premium={estimate.risk_premium:.4f}, tau={tau:.2f}',
             confidence=estimate.confidence,
             signal_values={

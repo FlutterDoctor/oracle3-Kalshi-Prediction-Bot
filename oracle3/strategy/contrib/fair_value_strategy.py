@@ -199,16 +199,17 @@ class FairValueStrategy(QuantStrategy):
 
         price_dec = Decimal(str(estimate.market_price))
         qty = size / max(price_dec, Decimal('0.01'))
-        ok = await trader.place_order(trade_ticker, side, qty, price_dec)
+        result = await trader.place_order(side, trade_ticker, price_dec, qty)
+        executed = result.executed
 
-        if ok:
+        if executed:
             self._positions[symbol] = new_state
             self._entry_times[symbol] = now
             self._entry_estimates[symbol] = estimate
             self._last_trade[symbol] = now
 
         self.record_decision(
-            ticker_name=symbol, action=action, executed=ok,
+            ticker_name=symbol, action=action, executed=executed,
             confidence=estimate.confidence,
             reasoning=(
                 f'fv={estimate.fair_value:.3f} mkt={estimate.market_price:.3f} '
@@ -238,16 +239,17 @@ class FairValueStrategy(QuantStrategy):
 
         price_dec = Decimal(str(estimate.market_price))
         qty = self._base_size / max(price_dec, Decimal('0.01'))
-        ok = await trader.place_order(trade_ticker, TradeSide.SELL, qty, price_dec)
+        result = await trader.place_order(TradeSide.SELL, trade_ticker, price_dec, qty)
+        executed = result.executed
 
-        if ok:
+        if executed:
             self._positions[symbol] = _FLAT
             self._entry_times.pop(symbol, None)
             self._entry_estimates.pop(symbol, None)
             self._last_trade[symbol] = now
 
         self.record_decision(
-            ticker_name=symbol, action=f'CLOSE_{state.upper()}', executed=ok,
+            ticker_name=symbol, action=f'CLOSE_{state.upper()}', executed=executed,
             confidence=estimate.confidence,
             reasoning=f'Exit: prem={estimate.risk_premium:.4f}',
             signal_values={'risk_premium': estimate.risk_premium},

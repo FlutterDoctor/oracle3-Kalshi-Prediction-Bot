@@ -164,7 +164,7 @@ class EdgeWeightedAllocator:
             )
 
         # Proportional allocation
-        allocations: dict[str, Decimal] = {}
+        allocations = {}
         for s in active:
             raw_score = max(0.0, scores[s.strategy_id])
             fraction = raw_score / total_score
