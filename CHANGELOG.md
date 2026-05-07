@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-28
+
+### Added
+
+- **Wang Transform MLE** (`oracle3.pricing.wang_mle`): full maximum likelihood estimator implementing the core model from Yang (2026), "Pricing Prediction Markets: Risk Premiums, Incomplete Markets, and a Decomposition Framework"
+  - Pooled and hierarchical estimation with analytic gradients
+  - Three SE estimators: Fisher, sandwich robust, Liang-Zeger clustered sandwich
+  - Numerical Hessian with eigenvalue regularization and BLAS chunk-size safety
+  - Model comparison (LR tests, AIC/BIC, pseudo-R²)
+  - Empirical priors: Polymarket λ=0.166, Kalshi=0.187, Metaculus=0.287, Manifold=-0.218
+
+- **Probabilistic fair value engine** (`oracle3.pricing`): full pricing module grounded in Yang (2026)
+  - Three distortion families: probit (Wang 2000), dual power (Denneberg 1994), proportional hazard
+  - **Exact empirical coefficients**: λ_i = 0.259 - 0.072·ln(1+V) + 0.143·ln(1+D) - 0.477·|p-0.5|
+  - **Time-varying model**: γ₁=-0.156·τ + γ₂=0.074·τ², half-life 33-77% of contract lifetime
+  - **Volume-stratified alpha targeting**: >$10K volume → λ≈0 (premium competed away); $500-$10K = sweet spot
+  - Hybrid calibrator: batch MLE (historical data) + streaming EWMA (live trading) with hierarchical shrinkage
+  - Premium lifecycle tracker with polynomial decay fitting and optimal entry timing
+  - Contract microstructure scorer (volume, spread, duration, extremity, book depth)
+
+- **Model sensitivities (Greeks)** (`oracle3.pricing.greeks`): analytic derivatives of the Wang model
+  - dp/dλ, dp/dp*, premium ratio, Kelly fraction, edge decay rate
+  - Favorite-longshot bias proven as theorem: overpricing ratio monotonically decreasing in p*
+  - Batch computation for portfolio-level risk decomposition
+
+- **Model-informed Kelly sizing** (`oracle3.trading.sizing`): position sizing with Wang-derived edge
+  - Kelly criterion with model edge, confidence scaling, and volume-tier gating
+  - Automatic skip of very-high-volume markets where premium is already competed away
+  - Inspired by three-tier sizing approaches in agent-native prediction market systems
+
+- **Edge-weighted capital allocator** (`oracle3.trading.allocator`): multi-strategy budget allocation
+  - Risk-adjusted scoring (PnL / |drawdown|) with 30-day exponential time decay
+  - Premium-alpha strategy bonus, reserve capital, per-strategy caps
+  - Graceful degradation: performance-weighted → equal → minimum budgets
+
+- **Correlation-aware risk manager** (`oracle3.risk.correlation_risk_manager`): correlated exposure limits
+  - EWMA rolling correlation estimation on price returns
+  - Effective exposure via correlation matrix quadratic form
+  - Concentration ratio gating, stale correlation decay
+
+- **Fair value divergence strategy v2** (`FairValueStrategy`): model-driven alpha with exact coefficients
+  - Uses Yang (2026) hierarchical model for per-contract λ estimation
+  - Kelly-optimal sizing from model Greeks
+  - Volume-tier targeting: focuses on medium-liquidity alpha sweet spot
+
+- **Premium decay strategy** (`PremiumDecayStrategy`): timing-based premium lifecycle alpha
+
+- **Distortion-based validation tools**: `estimate_risk_premium`, `cross_platform_premium_test`, `favorite_longshot_test` in `oracle3.market.validation`
+
+- **79 new tests** (total: 633) covering MLE recovery, Greeks, sizing, allocation, strategies
+
 ## [1.0.0] - 2026-03-09
 
 ### Added
