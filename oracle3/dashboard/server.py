@@ -25,6 +25,38 @@ STATIC_DIR = Path(__file__).parent / 'static'
 # Wallet address for Solscan links
 SOLANA_WALLET = '7RQ3YL4cLNbQbwAUHBP6GzdRbG6NRng8qBcHbiDrf8Ae'
 
+_RISK_LIMIT_KEYS = (
+    'max_single_trade_size',
+    'max_position_size',
+    'max_total_exposure',
+    'max_drawdown_pct',
+    'daily_loss_limit',
+    'max_positions',
+)
+
+
+def _apply_risk_limits(rm: Any, body: dict[str, Any]) -> None:
+    """Update a StandardRiskManager's limits in place from a config payload.
+
+    Raises ``InvalidOperation``/``ValueError``/``TypeError`` on bad input;
+    the caller turns that into an API error response.
+    """
+    from decimal import Decimal
+
+    if 'max_single_trade_size' in body:
+        rm.max_single_trade_size = Decimal(str(body['max_single_trade_size']))
+    if 'max_position_size' in body:
+        rm.max_position_size = Decimal(str(body['max_position_size']))
+    if 'max_total_exposure' in body:
+        rm.max_total_exposure = Decimal(str(body['max_total_exposure']))
+    if 'max_drawdown_pct' in body:
+        rm.max_drawdown_pct = Decimal(str(body['max_drawdown_pct']))
+    if 'daily_loss_limit' in body:
+        val = body['daily_loss_limit']
+        rm.daily_loss_limit = Decimal(str(val)) if val not in (None, '') else None
+    if 'max_positions' in body:
+        rm.max_positions = int(body['max_positions'])
+
 
 def _serialize_snapshot(engine: 'TradingEngine') -> dict[str, Any]:  # noqa: C901
     """Build a JSON-safe state dict from the engine snapshot.
@@ -280,7 +312,7 @@ def _serialize_snapshot(engine: 'TradingEngine') -> dict[str, Any]:  # noqa: C90
 def _build_dashboard_app(engine: 'TradingEngine'):  # noqa: C901
     """Build the FastAPI app with WebSocket and REST endpoints."""
     try:
-        from fastapi import FastAPI, WebSocket
+        from fastapi import FastAPI, Request, WebSocket
         from fastapi.responses import FileResponse, JSONResponse
     except ImportError as exc:
         raise RuntimeError(
@@ -335,6 +367,65 @@ def _build_dashboard_app(engine: 'TradingEngine'):  # noqa: C901
             return JSONResponse(
                 {'ok': False, 'error': f'Unknown command: {cmd}'}, status_code=400
             )
+
+    @app.get('/api/config')
+    async def get_config():
+        """Current ticker filter + risk limits (for populating the Controls panel)."""
+        from oracle3.core.trading_engine import _resolve_standard_risk_manager
+
+        rm = _resolve_standard_risk_manager(engine.trader.risk_manager)
+        limits: dict[str, Any] = {}
+        if rm is not None:
+            limits = {
+                'max_single_trade_size': str(rm.max_single_trade_size),
+                'max_position_size': str(rm.max_position_size),
+                'max_total_exposure': str(rm.max_total_exposure),
+                'max_drawdown_pct': str(rm.max_drawdown_pct),
+                'daily_loss_limit': (
+                    str(rm.daily_loss_limit) if rm.daily_loss_limit is not None else None
+                ),
+                'max_positions': rm.max_positions,
+            }
+        return JSONResponse({
+            'risk_manager_active': rm is not None,
+            'risk_limits': limits,
+            'ticker_filter': engine.get_ticker_filter(),
+        })
+
+    @app.post('/api/config')
+    async def set_config(request: Request):
+        """Update the ticker filter and/or risk limits live, no restart needed."""
+        from decimal import InvalidOperation
+
+        from oracle3.core.trading_engine import _resolve_standard_risk_manager
+
+        body = await request.json()
+        errors: list[str] = []
+
+        if 'ticker_filter' in body:
+            raw = body['ticker_filter']
+            if isinstance(raw, str):
+                raw = raw.split(',')
+            if raw is None or raw == []:
+                engine.set_ticker_filter(None)
+            elif isinstance(raw, list):
+                engine.set_ticker_filter(raw)
+            else:
+                errors.append('ticker_filter must be a comma-separated string or list')
+
+        if any(k in body for k in _RISK_LIMIT_KEYS):
+            rm = _resolve_standard_risk_manager(engine.trader.risk_manager)
+            if rm is None:
+                errors.append('No adjustable risk manager for this session')
+            else:
+                try:
+                    _apply_risk_limits(rm, body)
+                except (InvalidOperation, ValueError, TypeError) as exc:
+                    errors.append(f'Invalid risk limit value: {exc}')
+
+        if errors:
+            return JSONResponse({'ok': False, 'errors': errors}, status_code=400)
+        return JSONResponse({'ok': True})
 
     @app.get('/api/markets')
     async def get_markets():
@@ -406,7 +497,6 @@ class DashboardServer:
             host=self.host,
             port=self.port,
             log_level='warning',
-            ws='wsproto',
         )
         self._uvicorn_server = uvicorn.Server(config)
 

@@ -305,6 +305,8 @@
     max-height: 340px;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+    position: relative;
   }
   .panel h3 {
     font-size: 11px;
@@ -313,15 +315,53 @@
     color: var(--text-dim);
     margin-bottom: 10px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
+  .panel-expand-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .panel-expand-btn:hover { color: var(--text); background: var(--border); }
   .panel-body {
     overflow-y: auto;
     flex: 1;
+    min-height: 0;
     font-size: 12px;
   }
   .panel-body::-webkit-scrollbar { width: 4px; }
   .panel-body::-webkit-scrollbar-track { background: transparent; }
   .panel-body::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
+
+  /* Expanded panel overlay */
+  .panel-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(8,9,13,0.75);
+    backdrop-filter: blur(6px);
+    z-index: 900;
+  }
+  .panel-backdrop.open { display: block; }
+  .panel.expanded {
+    position: fixed;
+    top: 5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(720px, 90vw);
+    max-height: 85vh;
+    z-index: 901;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
 
   /* Positions table */
   .pos-table { width: 100%; border-collapse: collapse; }
@@ -509,6 +549,21 @@
   }
   .modal-list li:last-child { border-bottom: none; }
 
+  /* Settings form (in modal) */
+  .settings-field { margin-bottom: 12px; }
+  .settings-field label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .settings-field input {
+    width: 100%; background: var(--surface-2); border: 1px solid var(--border-light);
+    color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 13px;
+    font-family: inherit; font-variant-numeric: tabular-nums;
+  }
+  .settings-field input:focus { outline: none; border-color: var(--blue); }
+  .settings-hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+  .settings-actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
+  .settings-status { font-size: 12px; }
+  .settings-status.ok { color: var(--green); }
+  .settings-status.err { color: var(--red); }
+
   /* Reputation gauge */
   .rep-gauge {
     width: 80px; height: 80px;
@@ -671,19 +726,19 @@
   <!-- ============ DATA PANELS (Positions | Decisions | Order Books) ============ -->
   <div class="panels-row">
     <div class="panel">
-      <h3>Positions &amp; Performance</h3>
+      <h3>Positions &amp; Performance <button class="panel-expand-btn" onclick="togglePanelExpand(this)" title="Expand">⤢</button></h3>
       <div class="panel-body" id="positionsPanel">
         <div class="empty-state">No open positions</div>
       </div>
     </div>
     <div class="panel">
-      <h3>AI Decisions</h3>
+      <h3>AI Decisions <button class="panel-expand-btn" onclick="togglePanelExpand(this)" title="Expand">⤢</button></h3>
       <div class="panel-body" id="decisionsPanel">
         <div class="empty-state">Waiting for decisions…</div>
       </div>
     </div>
     <div class="panel">
-      <h3>Order Books</h3>
+      <h3>Order Books <button class="panel-expand-btn" onclick="togglePanelExpand(this)" title="Expand">⤢</button></h3>
       <div class="panel-body" id="orderbooksPanel">
         <div class="empty-state">No order book data</div>
       </div>
@@ -693,18 +748,20 @@
   <!-- ============ FEED PANELS (Trades | Activity + News) ============ -->
   <div class="feed-row">
     <div class="panel" style="max-height:300px">
-      <h3>Trade Feed</h3>
+      <h3>Trade Feed <button class="panel-expand-btn" onclick="togglePanelExpand(this)" title="Expand">⤢</button></h3>
       <div class="panel-body" id="tradesPanel">
         <div class="empty-state">No trades yet</div>
       </div>
     </div>
     <div class="panel" style="max-height:300px">
-      <h3>Activity Log &amp; News</h3>
+      <h3>Activity Log &amp; News <button class="panel-expand-btn" onclick="togglePanelExpand(this)" title="Expand">⤢</button></h3>
       <div class="panel-body" id="activityPanel">
         <div class="empty-state">Waiting for events…</div>
       </div>
     </div>
   </div>
+
+  <div class="panel-backdrop" id="panelBackdrop" onclick="collapseExpandedPanel()"></div>
 
   <!-- ============ CONTROLS ============ -->
   <div class="controls-bar">
@@ -712,6 +769,7 @@
       <button class="ctrl-btn pause" onclick="sendCmd('pause')">⏸ Pause</button>
       <button class="ctrl-btn resume" onclick="sendCmd('resume')">▶ Resume</button>
       <button class="ctrl-btn stop" onclick="if(confirm('Stop the engine?'))sendCmd('stop')">⏹ E-Stop</button>
+      <button class="ctrl-btn" onclick="openSettings()">⚙ Settings</button>
     </div>
     <div class="controls-right" id="controlsInfo">
       <span>Uptime: <strong id="ctrlUptime">—</strong></span>
@@ -1062,8 +1120,113 @@
     $('modalOverlay').classList.remove('open');
   };
 
+  // ---- Settings (ticker filter + risk limits) ----
+  window.openSettings = function() {
+    $('modalContent').innerHTML = '<h2>⚙ Settings</h2><div id="settingsBody">Loading…</div>';
+    $('modalOverlay').classList.add('open');
+    fetch('/api/config').then(r => r.json()).then(renderSettingsForm)
+      .catch(e => { $('settingsBody').innerHTML = `<div class="settings-status err">Failed to load: ${esc(e.message)}</div>`; });
+  };
+
+  function renderSettingsForm(cfg) {
+    const rl = cfg.risk_limits || {};
+    const field = (id, label, value, hint) => `
+      <div class="settings-field">
+        <label for="${id}">${label}</label>
+        <input id="${id}" value="${value == null ? '' : esc(String(value))}">
+        ${hint ? `<div class="settings-hint">${hint}</div>` : ''}
+      </div>`;
+
+    let html = '<div class="modal-section"><h4>What it trades on</h4>';
+    html += field('cfgTickerFilter', 'Ticker / series filter (comma-separated)',
+      (cfg.ticker_filter || []).join(', '),
+      'e.g. KXNBA, KXPRES2028. Leave blank to trade on every liquid Kalshi market.');
+    html += '</div>';
+
+    html += '<div class="modal-section"><h4>Risk limits</h4>';
+    if (!cfg.risk_manager_active) {
+      html += '<div class="settings-hint">No adjustable risk manager for this session.</div>';
+    } else {
+      html += field('cfgMaxTrade', 'Max single trade size ($)', rl.max_single_trade_size);
+      html += field('cfgMaxPosition', 'Max position size ($)', rl.max_position_size);
+      html += field('cfgMaxExposure', 'Max total exposure ($)', rl.max_total_exposure);
+      html += field('cfgMaxDrawdown', 'Max drawdown (fraction, e.g. 0.2 = 20%)', rl.max_drawdown_pct);
+      html += field('cfgDailyLoss', 'Daily loss limit ($, blank = none)', rl.daily_loss_limit);
+      html += field('cfgMaxPositions', 'Max open positions', rl.max_positions);
+    }
+    html += '</div>';
+
+    html += `
+      <div class="settings-actions">
+        <button class="ctrl-btn resume" onclick="applySettings()">Apply</button>
+        <span class="settings-status" id="settingsStatus"></span>
+      </div>`;
+
+    $('settingsBody').outerHTML = `<div id="settingsBody">${html}</div>`;
+  }
+
+  window.applySettings = function() {
+    const body = { ticker_filter: $('cfgTickerFilter').value };
+    const numField = (id, key) => {
+      const el = $(id);
+      if (el && el.value.trim() !== '') body[key] = el.value.trim();
+    };
+    if ($('cfgMaxTrade')) {
+      numField('cfgMaxTrade', 'max_single_trade_size');
+      numField('cfgMaxPosition', 'max_position_size');
+      numField('cfgMaxExposure', 'max_total_exposure');
+      numField('cfgMaxDrawdown', 'max_drawdown_pct');
+      numField('cfgMaxPositions', 'max_positions');
+      const daily = $('cfgDailyLoss');
+      if (daily) body.daily_loss_limit = daily.value.trim() === '' ? null : daily.value.trim();
+    }
+    const status = $('settingsStatus');
+    status.textContent = 'Applying…';
+    status.className = 'settings-status';
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) {
+          status.textContent = '✓ Applied';
+          status.className = 'settings-status ok';
+        } else {
+          status.textContent = '✗ ' + (d.errors || []).join('; ');
+          status.className = 'settings-status err';
+        }
+      })
+      .catch(e => {
+        status.textContent = '✗ Request failed: ' + e.message;
+        status.className = 'settings-status err';
+      });
+  };
+
   // Close on Escape
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); collapseExpandedPanel(); } });
+
+  // ---- Panel expand/collapse ----
+  function collapseExpandedPanel() {
+    const open = document.querySelector('.panel.expanded');
+    if (open) {
+      open.classList.remove('expanded');
+      const btn = open.querySelector('.panel-expand-btn');
+      if (btn) btn.textContent = '⤢';
+    }
+    $('panelBackdrop').classList.remove('open');
+  }
+  function togglePanelExpand(btn) {
+    const panel = btn.closest('.panel');
+    const wasExpanded = panel.classList.contains('expanded');
+    collapseExpandedPanel();
+    if (!wasExpanded) {
+      panel.classList.add('expanded');
+      btn.textContent = '⤡';
+      $('panelBackdrop').classList.add('open');
+    }
+  }
 
   function renderModal(num) {
     const s = state;

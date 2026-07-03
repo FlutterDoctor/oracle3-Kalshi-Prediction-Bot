@@ -35,6 +35,19 @@ logger = logging.getLogger(__name__)
 _MAX_CONSECUTIVE_NONE = 120  # ~2 min at 1 s timeout per poll
 
 
+def _resolve_standard_risk_manager(rm: Any) -> StandardRiskManager | None:
+    """Unwrap to the underlying StandardRiskManager, if there is one.
+
+    ``OnChainRiskManager`` composes a ``StandardRiskManager`` (``_local_rm``)
+    rather than subclassing it, so a plain ``isinstance`` check would miss
+    it and silently disable drawdown alerts / portfolio-health gating.
+    """
+    if isinstance(rm, StandardRiskManager):
+        return rm
+    local_rm = getattr(rm, '_local_rm', None)
+    return local_rm if isinstance(local_rm, StandardRiskManager) else None
+
+
 # ---------------------------------------------------------------------------
 # Snapshot data-classes
 # ---------------------------------------------------------------------------
@@ -171,6 +184,13 @@ class TradingEngine:
         # of calling data_source.get_next_event().  Set by ControlServer.
         self._data_paused: bool = False
 
+        # Runtime-adjustable ticker allowlist (symbol / market_ticker /
+        # event_ticker / series_ticker, case-insensitive prefix match).
+        # None or empty means "trade on everything". Market data still
+        # updates for all tickers regardless; this only gates whether the
+        # strategy gets to act on an event.
+        self._ticker_filter: set[str] | None = None
+
         # Reputation manager (optional, set externally)
         self._reputation_manager: Any | None = None
 
@@ -199,6 +219,39 @@ class TradingEngine:
         if not drained:
             return [event]
         return [event, *drained]
+
+    def set_ticker_filter(self, filters: list[str] | None) -> None:
+        """Restrict which tickers the strategy is allowed to act on.
+
+        ``filters`` entries are matched case-insensitively against a
+        ticker's symbol/market_ticker/event_ticker/series_ticker, either
+        exactly or as a prefix (so e.g. ``KXNBA`` matches every market in
+        that series). Pass ``None`` or an empty list to allow everything.
+        """
+        if not filters:
+            self._ticker_filter = None
+        else:
+            self._ticker_filter = {f.strip().upper() for f in filters if f.strip()}
+
+    def get_ticker_filter(self) -> list[str]:
+        return sorted(self._ticker_filter) if self._ticker_filter else []
+
+    def _ticker_allowed(self, ticker: object) -> bool:
+        if not self._ticker_filter:
+            return True
+        if ticker is None:
+            return True
+        candidates = [getattr(ticker, 'symbol', '')]
+        for attr in ('market_ticker', 'event_ticker', 'series_ticker'):
+            val = getattr(ticker, attr, '')
+            if val:
+                candidates.append(val)
+        return any(
+            c.upper() == f or c.upper().startswith(f)
+            for c in candidates
+            if c
+            for f in self._ticker_filter
+        )
 
     def _apply_market_event(self, event: object) -> None:
         if isinstance(event, OrderBookEvent):
@@ -263,8 +316,9 @@ class TradingEngine:
                 logger.info('NewsEvent: %s', headline)
 
             prev_orders = len(self.trader.orders)
-            self.strategy.bind_context(event, self.trader)
-            await self.strategy.process_event(event, self.trader)
+            if self._ticker_allowed(getattr(event, 'ticker', None)):
+                self.strategy.bind_context(event, self.trader)
+                await self.strategy.process_event(event, self.trader)
 
             decisions = self.strategy.get_decisions()
             stats = self.strategy.get_decision_stats()
@@ -558,8 +612,8 @@ class TradingEngine:
         """Fire a drawdown alert if the current drawdown exceeds the threshold."""
         if not self._alerter or self._drawdown_alert_pct is None:
             return
-        rm = self.trader.risk_manager
-        if not isinstance(rm, StandardRiskManager):
+        rm = _resolve_standard_risk_manager(self.trader.risk_manager)
+        if rm is None:
             return
         try:
             current_dd = rm.get_current_drawdown()
@@ -576,8 +630,8 @@ class TradingEngine:
 
     async def _check_portfolio_health(self) -> None:
         """Post-trade hard risk gate. Breaches force read-only degradation."""
-        rm = self.trader.risk_manager
-        if not isinstance(rm, StandardRiskManager):
+        rm = _resolve_standard_risk_manager(self.trader.risk_manager)
+        if rm is None:
             return
         try:
             ok, reason = rm.check_portfolio_health()
@@ -680,9 +734,10 @@ class TradingEngine:
 
         # ---- current drawdown from risk manager -------------------------
         current_dd = Decimal('0')
-        if isinstance(rm, StandardRiskManager):
+        std_rm = _resolve_standard_risk_manager(rm)
+        if std_rm is not None:
             try:
-                current_dd = rm.get_current_drawdown()
+                current_dd = std_rm.get_current_drawdown()
             except Exception:
                 logger.debug('get_current_drawdown error', exc_info=True)
 

@@ -54,9 +54,7 @@ def _build_app():
         from fastapi.responses import JSONResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:
-        raise RuntimeError(
-            'FastAPI not installed. Install with: poetry install -E blinks'
-        ) from exc
+        raise RuntimeError('FastAPI not installed. Install with: poetry install') from exc
 
     class ExecuteTradeBody(BaseModel):
         """Request body for the execute_trade endpoint (Solana Actions spec)."""
@@ -234,9 +232,7 @@ def run_server(host: str = '0.0.0.0', port: int = 8080) -> None:
     try:
         import uvicorn
     except ImportError as exc:
-        raise RuntimeError(
-            'uvicorn not installed. Install with: poetry install -E blinks'
-        ) from exc
+        raise RuntimeError('uvicorn not installed. Install with: poetry install') from exc
 
     app = _build_app()
     uvicorn.run(app, host=host, port=port)

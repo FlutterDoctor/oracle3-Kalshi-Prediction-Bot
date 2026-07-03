@@ -133,19 +133,31 @@ def dashboard(  # noqa: C901
             )
         )
 
-        # --- Feature 2: On-Chain Risk Manager ---
+        # --- Feature 2: Risk Manager ---
+        # Kalshi/Polymarket have no on-chain tx to simulate, so they get a
+        # plain StandardRiskManager (limits adjustable live from the
+        # dashboard's Controls panel). Solana keeps the on-chain wrapper.
         risk_manager: Any = NoRiskManager()
-        try:
-            from oracle3.risk.onchain_risk_manager import OnChainRiskManager
-            risk_manager = OnChainRiskManager(
+        if exchange in ('kalshi', 'polymarket'):
+            from oracle3.risk.risk_manager import StandardRiskManager
+            risk_manager = StandardRiskManager(
                 position_manager=position_manager,
                 market_data=market_data,
                 initial_capital=capital,
-                enable_simulation=False,  # paper mode — skip real RPC sim
             )
-            click.echo('  [✓] On-Chain Risk Manager loaded')
-        except Exception as exc:
-            click.echo(f'  [–] On-Chain Risk Manager skipped: {exc}')
+            click.echo('  [✓] Risk Manager loaded (adjust limits from the dashboard)')
+        else:
+            try:
+                from oracle3.risk.onchain_risk_manager import OnChainRiskManager
+                risk_manager = OnChainRiskManager(
+                    position_manager=position_manager,
+                    market_data=market_data,
+                    initial_capital=capital,
+                    enable_simulation=False,  # paper mode — skip real RPC sim
+                )
+                click.echo('  [✓] On-Chain Risk Manager loaded')
+            except Exception as exc:
+                click.echo(f'  [–] On-Chain Risk Manager skipped: {exc}')
 
         trader = PaperTrader(
             market_data=market_data,
