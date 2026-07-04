@@ -32,6 +32,43 @@ def blinks(host: str, port: int) -> None:
 
 
 @cli.command()
+@click.option('--host', default='0.0.0.0', show_default=True, help='Bind address')
+@click.option('--port', default=3000, show_default=True, type=int, help='Dashboard server port')
+@click.option(
+    '--initial-capital',
+    default='1000',
+    show_default=True,
+    help='Default per-game capital allocation.',
+)
+def dashboard(host: str, port: int, initial_capital: str) -> None:
+    """Launch the multi-game live + simulation web dashboard.
+
+    Search current games, allocate capital per game, let the bot trade
+    several at once (paper trading), and take manual control per game.
+    Open http://localhost:PORT.
+    """
+    import threading
+    from decimal import Decimal
+
+    from oracle3.dashboard.game_manager import GameManager
+    from oracle3.dashboard.server import GamesDashboardServer
+
+    manager = GameManager(default_allocation=Decimal(initial_capital))
+    server = GamesDashboardServer(manager, host=host, port=port)
+    server.start()
+
+    click.echo(f'Oracle3 dashboard running at http://localhost:{port}')
+    click.echo('Search live games, allocate capital, and let the bot trade.')
+    click.echo('Paper trading (no real money). Press Ctrl+C to stop.\n')
+
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        click.echo('\nDashboard stopped.')
+        server.stop()
+
+
+@cli.command('dashboard-legacy')
 @click.option('--port', default=3000, show_default=True, type=int, help='Dashboard server port')
 @click.option(
     '--exchange',
@@ -58,7 +95,7 @@ def blinks(host: str, port: int) -> None:
 @click.option(
     '--max-events', default=None, type=int, help='Limit events for episode replay.'
 )
-def dashboard(  # noqa: C901
+def dashboard_legacy(  # noqa: C901
     port: int,
     exchange: str,
     duration: float | None,

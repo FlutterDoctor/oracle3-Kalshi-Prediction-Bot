@@ -129,6 +129,43 @@ class FairValueStrategy(QuantStrategy):
         self._entry_estimates: dict[str, FairValueEstimate] = {}
         self._last_trade: dict[str, float] = defaultdict(float)
 
+    def get_thresholds(self) -> dict[str, float]:
+        """Current live-tunable entry thresholds (for the dashboard controls panel)."""
+        return {
+            'min_edge': self._min_edge,
+            'min_confidence': self._min_conf,
+            'cooldown_seconds': self._cooldown,
+        }
+
+    def set_thresholds(
+        self,
+        min_edge: float | None = None,
+        min_confidence: float | None = None,
+        cooldown_seconds: float | None = None,
+    ) -> None:
+        """Update entry thresholds live — takes effect on the next event, no restart."""
+        if min_edge is not None:
+            self._min_edge = min_edge
+        if min_confidence is not None:
+            self._min_conf = min_confidence
+        if cooldown_seconds is not None:
+            self._cooldown = int(cooldown_seconds)
+
+    def _hold(self, symbol: str, estimate: FairValueEstimate, reasoning: str) -> None:
+        """Record why the strategy chose not to act this tick."""
+        self.record_decision(
+            ticker_name=symbol, action='HOLD', executed=False,
+            confidence=estimate.confidence,
+            reasoning=reasoning,
+            signal_values={
+                'fair_value': estimate.fair_value,
+                'market_price': estimate.market_price,
+                'risk_premium': estimate.risk_premium,
+                'lambda': estimate.lambda_adjusted,
+                'confidence': estimate.confidence,
+            },
+        )
+
     async def process_event(self, event: Event, trader: Trader) -> None:
         if self.is_paused():
             return
@@ -160,20 +197,39 @@ class FairValueStrategy(QuantStrategy):
         if state != _FLAT:
             if self._should_exit(symbol, estimate, now):
                 await self._exit(symbol, ticker, trader, estimate, now)
-                return
+            else:
+                self._hold(
+                    symbol, estimate,
+                    f'holding {state}: premium {estimate.risk_premium:.4f} still favorable',
+                )
+            return
 
         # Entry logic
-        if state == _FLAT:
-            if now - self._last_trade[symbol] < self._cooldown:
-                return
-            if estimate.confidence < self._min_conf:
-                return
-            if self._skip_vhv and estimate.volume_tier == 'very_high':
-                return
-            edge = abs(estimate.risk_premium)
-            net_edge = edge - 2 * float(self._fee_rate)
-            if net_edge >= self._min_edge:
-                await self._enter(symbol, ticker, trader, estimate, now)
+        cooldown_left = self._cooldown - (now - self._last_trade[symbol])
+        if cooldown_left > 0:
+            self._hold(symbol, estimate, f'cooldown: {cooldown_left:.0f}s left')
+            return
+        if estimate.confidence < self._min_conf:
+            self._hold(
+                symbol, estimate,
+                f'confidence {estimate.confidence:.2f} < min {self._min_conf:.2f}',
+            )
+            return
+        if self._skip_vhv and estimate.volume_tier == 'very_high':
+            self._hold(
+                symbol, estimate,
+                'skipped: very-high-volume tier, premium already competed away',
+            )
+            return
+        edge = abs(estimate.risk_premium)
+        net_edge = edge - 2 * float(self._fee_rate)
+        if net_edge >= self._min_edge:
+            await self._enter(symbol, ticker, trader, estimate, now)
+        else:
+            self._hold(
+                symbol, estimate,
+                f'net edge {net_edge:.4f} < min {self._min_edge:.4f}',
+            )
 
     async def _enter(
         self, symbol: str, ticker: Ticker, trader: Trader,

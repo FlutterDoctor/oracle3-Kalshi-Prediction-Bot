@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Oracle3 — Games</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2129; --border: #2d333b;
+    --text: #e6edf3; --muted: #8b949e; --accent: #2f81f7; --accent2: #388bfd;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+    --radius: 10px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6; --border:#d0d7de;
+      --text:#1f2328; --muted:#636c76; }
+  }
+  :root[data-theme="dark"] { --bg:#0d1117; --panel:#161b22; --panel2:#1c2129;
+    --border:#2d333b; --text:#e6edf3; --muted:#8b949e; }
+  :root[data-theme="light"] { --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6;
+    --border:#d0d7de; --text:#1f2328; --muted:#636c76; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    font-size:14px; line-height:1.4; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .pos { color:var(--green); } .neg { color:var(--red); }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--border);
+    background:var(--panel2); color:var(--text); border-radius:7px;
+    padding:6px 12px; font-size:13px; transition:.12s; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:var(--red); border-color:var(--red); color:#fff; }
+  input, select { font-family:inherit; background:var(--bg); color:var(--text);
+    border:1px solid var(--border); border-radius:7px; padding:6px 9px; font-size:13px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+
+  header { position:sticky; top:0; z-index:10; background:var(--panel);
+    border-bottom:1px solid var(--border); padding:12px 20px;
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  .logo { font-weight:700; font-size:17px; letter-spacing:.3px; }
+  .logo span { color:var(--accent); }
+  .tabs { display:flex; gap:4px; }
+  .tab { padding:6px 16px; border-radius:7px; border:1px solid transparent;
+    color:var(--muted); background:transparent; }
+  .tab.active { color:var(--text); background:var(--panel2); border-color:var(--border); }
+  .agg { margin-left:auto; display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+  .agg .item { text-align:right; }
+  .agg .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
+  .agg .val { font-size:16px; font-weight:700; }
+  .conn { width:8px; height:8px; border-radius:50%; background:var(--red); display:inline-block; }
+  .conn.on { background:var(--green); }
+
+  main { padding:20px; max-width:1500px; margin:0 auto; }
+  .hidden { display:none !important; }
+
+  /* search */
+  .cattabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .cattab { padding:6px 14px; border-radius:20px; }
+  .cattab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .searchbar { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .searchbar input { flex:1; min-width:200px; }
+  .results { background:var(--panel); border:1px solid var(--border);
+    border-radius:var(--radius); margin-bottom:20px; max-height:420px; overflow-y:auto; }
+  .result { padding:10px 14px; border-bottom:1px solid var(--border); }
+  .result:last-child { border-bottom:none; }
+  .result-top { display:flex; align-items:flex-start; gap:12px; }
+  .result .title { flex:1; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; font-weight:600; }
+  .result .title small { color:var(--muted); display:block; font-size:11px; font-weight:400; }
+  .badge { flex-shrink:0; font-size:10px; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 7px; border-radius:5px; background:var(--panel2);
+    border:1px solid var(--border); color:var(--muted); height:fit-content; }
+  .result-line { display:flex; justify-content:space-between; gap:10px;
+    font-size:12px; padding:3px 0 0 44px; color:var(--muted); }
+  .result-line .line-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .result-chips { display:flex; flex-wrap:wrap; gap:6px; padding:6px 0 0 44px; }
+  .chip { font-size:11px; background:var(--panel2); border:1px solid var(--border);
+    border-radius:6px; padding:2px 7px; color:var(--text); }
+  .chip.muted { color:var(--muted); }
+
+  /* game grid */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--border);
+    border-radius:var(--radius); overflow:hidden; display:flex; flex-direction:column; }
+  .card-head { display:flex; align-items:flex-start; gap:8px; padding:12px 14px;
+    border-bottom:1px solid var(--border); }
+  .card-head .name { flex:1; font-weight:600; font-size:14px; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .card-head .name small { display:block; color:var(--muted); font-size:11px; font-weight:400; }
+  .pill { font-size:10px; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 8px; border-radius:20px; font-weight:600; }
+  .pill.running { background:rgba(63,185,80,.15); color:var(--green); }
+  .pill.bot_paused { background:rgba(210,153,34,.15); color:var(--amber); }
+  .pill.resolved { background:rgba(47,129,247,.15); color:var(--accent); }
+  .pill.needs_keys, .pill.halted, .pill.starting { background:rgba(248,81,73,.13); color:var(--red); }
+  .icon-btn { background:transparent; border:none; color:var(--muted); font-size:15px; padding:0 4px; }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--border); border-bottom:1px solid var(--border); }
+  .metric { background:var(--panel); padding:9px 12px; }
+  .metric .lbl { font-size:9px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
+  .metric .val { font-size:15px; font-weight:700; margin-top:1px; }
+  .spark { height:46px; width:100%; display:block; background:var(--panel); }
+  .section { padding:10px 14px; border-top:1px solid var(--border); }
+  .section h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--muted); font-weight:600; }
+  table.mini { width:100%; border-collapse:collapse; font-size:12px; }
+  table.mini th { text-align:left; color:var(--muted); font-weight:500;
+    font-size:10px; text-transform:uppercase; padding:2px 4px; }
+  table.mini td { padding:3px 4px; border-top:1px solid var(--border); }
+  .feed { max-height:120px; overflow-y:auto; font-size:12px; }
+  .feed .row { display:flex; justify-content:space-between; padding:2px 0; gap:8px; }
+  .side { font-weight:700; text-transform:uppercase; font-size:10px; padding:1px 5px; border-radius:4px; }
+  .side.buy { background:rgba(63,185,80,.15); color:var(--green); }
+  .side.sell { background:rgba(248,81,73,.15); color:var(--red); }
+  .empty { color:var(--muted); font-size:12px; padding:4px 0; }
+  .botrow { display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid var(--border); }
+  .switch { display:flex; align-items:center; gap:7px; margin-left:auto; }
+  .toggle { width:38px; height:22px; border-radius:20px; background:var(--border);
+    position:relative; transition:.15s; border:none; padding:0; }
+  .toggle.on { background:var(--green); }
+  .toggle::after { content:""; position:absolute; width:16px; height:16px;
+    border-radius:50%; background:#fff; top:3px; left:3px; transition:.15s; }
+  .toggle.on::after { left:19px; }
+  .manual { display:grid; grid-template-columns:auto auto 1fr 1fr auto; gap:6px; align-items:center; }
+  .manual select, .manual input { padding:5px 7px; font-size:12px; }
+  .manual .full { grid-column:1 / -1; }
+  .note { color:var(--muted); font-size:11px; margin-top:4px; min-height:14px; }
+
+  /* bot status */
+  .statusrow { display:flex; align-items:center; gap:8px; padding:9px 14px;
+    border-top:1px solid var(--border); background:var(--panel2); }
+  .statusdot { width:7px; height:7px; border-radius:50%; background:var(--muted); flex-shrink:0; }
+  .statusdot.live { background:var(--green); box-shadow:0 0 0 3px rgba(63,185,80,.15); }
+  .statusdot.wait { background:var(--amber); }
+  .statustext { flex:1; min-width:0; }
+  .statustext .label { font-weight:600; font-size:12px; }
+  .statustext .detail { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .statustime { color:var(--muted); font-size:10px; flex-shrink:0; }
+
+  /* live market prices */
+  .pricerow { display:flex; justify-content:space-between; align-items:center;
+    padding:3px 0; gap:8px; font-size:12px; }
+  .pricerow .pname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+  .pricepct { font-weight:700; }
+
+  /* thresholds */
+  .thresh { display:grid; grid-template-columns:repeat(3,1fr) auto; gap:6px; align-items:end; }
+  .thresh .field label { font-size:10px; }
+  .thresh input { width:100%; }
+
+  /* simulation */
+  .sim-controls { background:var(--panel); border:1px solid var(--border);
+    border-radius:var(--radius); padding:16px; margin-bottom:18px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; align-items:end; }
+  .field label { display:block; font-size:11px; color:var(--muted); margin-bottom:4px; }
+  .field input, .field select { width:100%; }
+  .sim-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:12px; margin-bottom:18px; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+  .stat .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
+  .stat .val { font-size:22px; font-weight:700; margin-top:3px; }
+  #simChart { width:100%; height:260px; background:var(--panel);
+    border:1px solid var(--border); border-radius:var(--radius); margin-bottom:18px; }
+  .hint { color:var(--muted); font-size:11px; margin-top:3px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Oracle<span>3</span></div>
+  <div class="tabs">
+    <button class="tab active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
+    <button class="tab" data-tab="sim" onclick="switchTab('sim')">Simulation</button>
+  </div>
+  <div class="agg">
+    <div class="item"><div class="lbl">Games</div><div class="val tnum" id="aggGames">0</div></div>
+    <div class="item"><div class="lbl">Allocated</div><div class="val tnum" id="aggAlloc">$0</div></div>
+    <div class="item"><div class="lbl">Total P&amp;L</div><div class="val tnum" id="aggPnl">$0</div></div>
+    <div class="item"><div class="lbl">Return</div><div class="val tnum" id="aggRet">0%</div></div>
+    <button class="danger" onclick="estop()">⏹ E-Stop All</button>
+    <span class="conn" id="conn" title="connection"></span>
+  </div>
+</header>
+
+<main>
+  <!-- LIVE TAB -->
+  <section id="tab-live">
+    <div class="cattabs" id="cattabs"></div>
+    <div class="searchbar">
+      <input id="searchInput" placeholder="Search current games (e.g. Lakers, election, Bitcoin)…"
+        onkeydown="if(event.key==='Enter')doSearch()" />
+      <select id="searchExchange">
+        <option value="both">Both</option>
+        <option value="polymarket">Polymarket</option>
+        <option value="kalshi">Kalshi</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;white-space:nowrap">
+        Capital per game
+        <input id="searchAlloc" type="number" value="500" style="width:90px" title="Capital allocated to each game you add ($)" />
+      </label>
+      <button class="primary" onclick="doSearch()">Search</button>
+      <button onclick="loadLive()" title="Refresh the current tab">Refresh</button>
+    </div>
+    <div class="results hidden" id="results"></div>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="gridEmpty">No games yet. Pick a tab or search above and add one to let the bot start trading.</div>
+  </section>
+
+  <!-- SIM TAB -->
+  <section id="tab-sim" class="hidden">
+    <div class="sim-controls">
+      <div class="field"><label>Historical market</label><select id="simMarket"></select></div>
+      <div class="field"><label>Initial capital ($)</label><input id="simCapital" type="number" value="1000" /></div>
+      <div class="field">
+        <label>Min confidence</label><input id="simConf" type="number" step="0.01" value="0.05" />
+      </div>
+      <div class="field"><label>Commission</label><input id="simComm" type="number" step="0.001" value="0" /></div>
+      <div class="field"><button class="primary" onclick="runSim()" id="simRunBtn">Run Simulation</button></div>
+      <div class="hint full" style="grid-column:1/-1">
+        History files carry no volume data, so the Wang model's confidence is low (~0.05).
+        The bot's live default is 0.20 — lower it here to see how it would trade.
+      </div>
+    </div>
+    <div id="simResults" class="hidden">
+      <div class="sim-metrics" id="simMetrics"></div>
+      <canvas id="simChart"></canvas>
+      <div class="stat">
+        <h4 style="margin:0 0 8px;color:var(--muted);font-size:11px;text-transform:uppercase">Trade log</h4>
+        <table class="mini" id="simTrades"></table>
+      </div>
+    </div>
+    <div class="empty" id="simEmpty">Pick a market and run a simulation to see how the bot performs.</div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtUsd = v => (v<0?'-$':'$') + Math.abs(Number(v)).toLocaleString(undefined,{maximumFractionDigits:2});
+const cls = v => Number(v) > 0 ? 'pos' : Number(v) < 0 ? 'neg' : '';
+const sign = v => (Number(v)>0?'+':'') ;
+
+function switchTab(t){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+  $('tab-live').classList.toggle('hidden', t!=='live');
+  $('tab-sim').classList.toggle('hidden', t!=='sim');
+  if(t==='sim' && !$('simMarket').options.length) loadSimMarkets();
+}
+
+/* ---------- category tabs ---------- */
+// Keys must match oracle3.cli.market_commands.CATEGORIES.
+const CATEGORIES = [
+  {key:'all', label:'All'},
+  {key:'world-cup', label:'World Cup'},
+  {key:'sports', label:'Sports'},
+  {key:'politics', label:'Politics'},
+  {key:'crypto', label:'Crypto'},
+  {key:'economy', label:'Economy'},
+  {key:'entertainment', label:'Entertainment'},
+];
+let currentCategory = 'all';
+
+function renderCatTabs(){
+  $('cattabs').innerHTML = CATEGORIES.map(c =>
+    `<button class="tab cattab ${c.key===currentCategory?'active':''}" onclick="selectCategory('${c.key}')">${c.label}</button>`
+  ).join('');
+}
+function selectCategory(key){
+  currentCategory = key;
+  renderCatTabs();
+  loadLive();
+}
+renderCatTabs();
+
+/* ---------- search + add ---------- */
+async function doSearch(){
+  const q = $('searchInput').value.trim();
+  if(!q) return;
+  const ex = $('searchExchange').value;
+  const res = $('results');
+  res.classList.remove('hidden');
+  res.innerHTML = '<div class="result"><div class="title">Searching…</div></div>';
+  try {
+    const data = await (await fetch(`/api/search?q=${encodeURIComponent(q)}&exchange=${ex}`)).json();
+    if(!data.games.length){ res.innerHTML = '<div class="result"><div class="title">No games found.</div></div>'; return; }
+    res.innerHTML = data.games.length
+      ? data.games.map(resultHtml).join('')
+      : '<div class="result"><div class="title">No real markets found — try a broader term (e.g. a league or team name).</div></div>';
+  } catch(e){ res.innerHTML = '<div class="result"><div class="title">Search failed.</div></div>'; }
+}
+
+async function loadLive(){
+  const ex = $('searchExchange').value;
+  const res = $('results');
+  res.classList.remove('hidden');
+  res.innerHTML = '<div class="result"><div class="title">Loading live games…</div></div>';
+  try {
+    const data = await (await fetch(`/api/live?exchange=${ex}&category=${currentCategory}`)).json();
+    res.innerHTML = data.games.length
+      ? data.games.map(resultHtml).join('')
+      : '<div class="result"><div class="title">No live markets found for this category right now — try another tab.</div></div>';
+  } catch(e){ res.innerHTML = '<div class="result"><div class="title">Failed to load live games.</div></div>'; }
+}
+
+function priceChip(m){
+  const bid = m.bid!=='' && m.bid!=null ? Math.round(m.bid*100) : null;
+  const ask = m.ask!=='' && m.ask!=null ? Math.round(m.ask*100) : null;
+  if(bid==null && ask==null) return '';
+  if(bid!=null && ask!=null) return `${bid}¢/${ask}¢`;
+  return `${bid!=null?bid:ask}¢`;
+}
+function closeDate(m){
+  if(!m.close) return '';
+  const d = new Date(m.close);
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+}
+
+function resultHtml(g){
+  const ms = g.markets;
+  const date = closeDate(ms[0]) || '';
+  let body;
+  if(ms.length <= 3){
+    body = ms.map(m=>`<div class="result-line"><span class="line-name">${esc(m.name).slice(0,60)}</span>
+      <span class="line-price tnum">${priceChip(m)}</span></div>`).join('');
+  } else {
+    const top = ms.slice(0,3).map(m=>`<span class="chip">${esc(m.name).slice(0,18)} ${priceChip(m)}</span>`).join('');
+    body = `<div class="result-chips">${top}<span class="chip muted">+${ms.length-3} more</span></div>`;
+  }
+  return `<div class="result">
+    <div class="result-top">
+      <span class="badge">${g.exchange}</span>
+      <div class="title">${esc(g.title).slice(0,90)}${date?`<small>Closes ${date} · ${ms.length} contract${ms.length>1?'s':''}</small>`:`<small>${ms.length} contract${ms.length>1?'s':''}</small>`}</div>
+      <button class="primary" onclick='addGame(${JSON.stringify(g).replace(/'/g,"&#39;")})'>Add</button>
+    </div>
+    ${body}
+  </div>`;
+}
+
+async function addGame(g){
+  const alloc = $('searchAlloc').value || '500';
+  try {
+    const r = await (await fetch('/api/games',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({title:g.title, exchange:g.exchange, allocation:alloc, markets:g.markets})})).json();
+    if(!r.ok){ alert('Could not add game: '+(r.error||'unknown')); return; }
+    $('results').classList.add('hidden');
+    $('searchInput').value = '';
+  } catch(e){ alert('Add failed'); }
+}
+
+async function removeGame(id){
+  if(!confirm('Remove this game and stop trading it?')) return;
+  await fetch('/api/games/'+id, {method:'DELETE'});
+}
+
+async function toggleBot(id, active){
+  await fetch(`/api/games/${id}/bot`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action: active ? 'pause' : 'resume'})});
+}
+
+async function saveThresholds(id){
+  const min_edge = $('edge-'+id).value;
+  const min_confidence = $('conf-'+id).value;
+  const cooldown_seconds = $('cd-'+id).value;
+  const note = $('thnote-'+id);
+  try {
+    const r = await (await fetch(`/api/games/${id}/strategy`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({min_edge, min_confidence, cooldown_seconds})})).json();
+    note.textContent = r.ok ? 'Saved — takes effect on the next tick.' : 'Failed to save.';
+    note.className = 'note ' + (r.ok ? 'pos':'neg');
+  } catch(e){ note.textContent = 'Save failed.'; note.className = 'note neg'; }
+}
+
+async function placeManual(id){
+  const market = $('mk-'+id).value;
+  const side = $('side-'+id).value;
+  const isNo = $('sideno-'+id).value === 'no';
+  const price = parseFloat($('price-'+id).value);
+  const qty = parseFloat($('qty-'+id).value);
+  const note = $('note-'+id);
+  if(!(price>0) || !(qty>0)){ note.textContent = 'Enter a price and quantity.'; return; }
+  const r = await (await fetch(`/api/games/${id}/order`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({market_id:market, side, is_no:isNo, price, quantity:qty})})).json();
+  note.textContent = r.ok ? `Order ${r.status} — filled ${r.filled}` : `Rejected: ${r.error}`;
+  note.className = 'note ' + (r.ok ? 'pos':'neg');
+}
+
+async function estop(){
+  if(!confirm('Emergency stop: halt the bot AND manual trading on every game?')) return;
+  await fetch('/api/command/estop',{method:'POST'});
+}
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ---------- live render ---------- */
+let manualState = {}; // preserve manual-form inputs across re-renders
+
+function render(state){
+  $('aggGames').textContent = state.summary.num_games;
+  $('aggAlloc').textContent = fmtUsd(state.summary.total_allocated);
+  const p = $('aggPnl'); p.textContent = sign(state.summary.total_pnl)+fmtUsd(state.summary.total_pnl); p.className='val tnum '+cls(state.summary.total_pnl);
+  const r = $('aggRet'); r.textContent = state.summary.return_pct.toFixed(2)+'%'; r.className='val tnum '+cls(state.summary.return_pct);
+
+  const grid = $('grid');
+  $('gridEmpty').classList.toggle('hidden', state.games.length>0);
+  grid.innerHTML = state.games.map(cardHtml).join('');
+  state.games.forEach(g => drawSpark('spark-'+g.game_id, g.equity_curve, Number(g.total_pnl)>=0));
+}
+
+function decisionRow(d){
+  const isBuy = d.action.startsWith('BUY');
+  const isClose = d.action.startsWith('CLOSE');
+  const sideCls = isBuy ? 'buy' : isClose ? 'sell' : '';
+  const sideStyle = sideCls ? '' : 'background:var(--panel2);color:var(--muted)';
+  return `<div class="row"><span class="side ${sideCls}" style="${sideStyle}">${d.action}</span>
+    <span style="flex:1;color:var(--muted)" title="${esc(d.reasoning)}">${esc(d.reasoning).slice(0,70)}</span>
+    <span class="tnum" style="color:var(--muted)">${d.time}</span></div>`;
+}
+
+function priceRow(m){
+  const pct = m.last!=null ? Math.round(+m.last*100) : (m.bid!=null&&m.ask!=null ? Math.round((+m.bid+ +m.ask)/2*100) : null);
+  const bidAsk = (m.bid!=null && m.ask!=null) ? `<span style="color:var(--muted)">${Math.round(+m.bid*100)}¢/${Math.round(+m.ask*100)}¢</span>` : '';
+  return `<div class="pricerow"><span class="pname">${esc(m.name).slice(0,26)}</span>
+    ${bidAsk}<span class="pricepct">${pct!=null?pct+'%':'—'}</span></div>`;
+}
+
+function cardHtml(g){
+  const posRows = g.positions.length ? g.positions.map(p=>`
+    <tr><td>${esc(p.name||p.symbol).slice(0,22)}</td><td class="tnum">${(+p.qty).toFixed(1)}</td>
+    <td class="tnum">${(+p.avg_cost).toFixed(3)}</td><td class="tnum">${(+p.current_price).toFixed(3)}</td>
+    <td class="tnum ${cls(p.unrealized_pnl)}">${fmtUsd(p.unrealized_pnl)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty">No open positions</td></tr>';
+  const feed = g.trades.length ? g.trades.slice().reverse().map(t=>`
+    <div class="row"><span class="side ${t.side.toLowerCase()}">${t.side}</span>
+    <span style="flex:1">${esc(t.name||'').slice(0,20)}</span>
+    <span class="tnum">${(+t.qty).toFixed(1)}@${(+t.price).toFixed(3)}</span></div>`).join('')
+    : '<div class="empty">No trades yet</div>';
+  const decisions = g.decisions && g.decisions.length
+    ? g.decisions.slice().reverse().map(decisionRow).join('')
+    : '<div class="empty">No decisions yet — waiting on the next price tick.</div>';
+  const prices = g.market_prices && g.market_prices.length
+    ? g.market_prices.map(priceRow).join('')
+    : '<div class="empty">No live prices yet.</div>';
+  const mkOpts = g.markets.map(m=>`<option value="${m.market_id}">${esc(m.name||m.market_id).slice(0,30)}</option>`).join('');
+  const botOn = g.bot_active;
+  const disabled = (g.status==='needs_keys'||g.status==='halted') ? 'disabled' : '';
+  const st = g.bot_status || {label:'', detail:'', as_of:''};
+  const dotCls = /waiting|monitoring|holding/i.test(st.label) ? 'wait' : (botOn ? 'live' : '');
+  const gid = g.game_id;
+  const sc = g.strategy_config || {};
+  const edgeVal = manualState['edge-'+gid] ?? sc.min_edge;
+  const confVal = manualState['conf-'+gid] ?? sc.min_confidence;
+  const cdVal = manualState['cd-'+gid] ?? sc.cooldown_seconds;
+  return `<div class="card">
+    <div class="card-head">
+      <div class="name">${esc(g.title)}<small>${g.exchange} · ${g.markets.length} market(s)</small></div>
+      <span class="pill ${g.status}">${g.status.replace('_',' ')}</span>
+      <button class="icon-btn" title="Remove" onclick="removeGame('${gid}')">✕</button>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="lbl">Equity</div><div class="val tnum">${fmtUsd(g.equity)}</div></div>
+      <div class="metric"><div class="lbl">P&amp;L</div><div class="val tnum ${cls(g.total_pnl)}">${sign(g.total_pnl)}${fmtUsd(g.total_pnl)}</div></div>
+      <div class="metric"><div class="lbl">Return</div><div class="val tnum ${cls(g.return_pct)}">${g.return_pct.toFixed(1)}%</div></div>
+      <div class="metric"><div class="lbl">Cash</div><div class="val tnum">${fmtUsd(g.cash)}</div></div>
+    </div>
+    <canvas class="spark" id="spark-${gid}"></canvas>
+    <div class="statusrow">
+      <span class="statusdot ${dotCls}"></span>
+      <div class="statustext">
+        <div class="label">${esc(st.label||'—')}</div>
+        ${st.detail?`<div class="detail" title="${esc(st.detail)}">${esc(st.detail)}</div>`:''}
+      </div>
+      ${st.as_of?`<span class="statustime">as of ${st.as_of}</span>`:''}
+    </div>
+    <div class="botrow">
+      <span style="font-size:12px;color:var(--muted)">Allocated ${fmtUsd(g.allocation)}</span>
+      <div class="switch"><span style="font-size:12px">Bot ${botOn?'On':'Off'}</span>
+        <button class="toggle ${botOn?'on':''}" ${disabled} title="Toggle bot on this game"
+          onclick="toggleBot('${gid}', ${botOn})"></button></div>
+    </div>
+    <div class="section"><h4>Live market</h4>${prices}</div>
+    <div class="section"><h4>Positions</h4>
+      <table class="mini"><thead><tr><th>Market</th><th>Qty</th><th>Avg</th><th>Px</th><th>P&amp;L</th></tr></thead>
+      <tbody>${posRows}</tbody></table></div>
+    <div class="section"><h4>Buys / Sells</h4><div class="feed">${feed}</div></div>
+    <div class="section"><h4>Bot reasoning</h4><div class="feed">${decisions}</div></div>
+    <div class="section"><h4>Strategy thresholds</h4>
+      <div class="thresh">
+        <div class="field"><label>Min edge</label><input id="edge-${gid}" type="number" step="0.001" value="${edgeVal}" /></div>
+        <div class="field"><label>Min confidence</label><input id="conf-${gid}" type="number" step="0.01" value="${confVal}" /></div>
+        <div class="field"><label>Cooldown (s)</label><input id="cd-${gid}" type="number" step="1" value="${cdVal}" /></div>
+        <button onclick="saveThresholds('${gid}')">Save</button>
+      </div>
+      <div class="note" id="thnote-${gid}"></div>
+    </div>
+    <div class="section"><h4>Manual control ${botOn?'':'(bot paused — you have the wheel)'}</h4>
+      <div class="manual">
+        <select id="side-${gid}"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+        <select id="sideno-${gid}"><option value="yes">YES</option><option value="no">NO</option></select>
+        <input id="price-${gid}" type="number" step="0.01" placeholder="price" />
+        <input id="qty-${gid}" type="number" step="1" placeholder="qty" />
+        <button ${disabled} onclick="placeManual('${gid}')">Place</button>
+        <select id="mk-${gid}" class="full">${mkOpts}</select>
+      </div>
+      <div class="note" id="note-${gid}"></div>
+    </div>
+  </div>`;
+}
+
+/* preserve manual inputs the user is typing across the 2s re-render */
+document.addEventListener('input', e=>{
+  if(/^(price|qty|edge|conf|cd)-/.test(e.target.id)) manualState[e.target.id] = e.target.value;
+});
+function restoreManual(){
+  for(const k in manualState){ const el=$(k); if(el) el.value = manualState[k]; }
+}
+
+/* ---------- sparkline ---------- */
+function drawSpark(id, data, up){
+  const c = $(id); if(!c) return;
+  const w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio||1;
+  c.width = w*dpr; c.height = h*dpr;
+  const ctx = c.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!data || data.length<2) return;
+  const min = Math.min(...data), max = Math.max(...data), rng = (max-min)||1;
+  const col = getComputedStyle(document.documentElement).getPropertyValue(up?'--green':'--red').trim();
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const x=i/(data.length-1)*w, y=h-6-((v-min)/rng)*(h-12); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
+  ctx.fillStyle = col + '22'; ctx.fill();
+}
+
+/* ---------- websocket ---------- */
+let ws, retry=0;
+function connect(){
+  ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
+  ws.onopen = ()=>{ retry=0; $('conn').classList.add('on'); };
+  ws.onmessage = e=>{ render(JSON.parse(e.data)); restoreManual(); };
+  ws.onclose = ()=>{ $('conn').classList.remove('on'); retry=Math.min(retry+1,6); setTimeout(connect, retry*1000); };
+  ws.onerror = ()=> ws.close();
+}
+connect();
+loadLive();
+
+/* ---------- simulation ---------- */
+async function loadSimMarkets(){
+  const sel = $('simMarket');
+  try {
+    const data = await (await fetch('/api/sim/markets')).json();
+    sel.innerHTML = data.markets.map(m=>`<option value="${m.market_id}|${m.event_id}">${esc(m.name)} — ${m.points} pts (${m.first_price}→${m.last_price})</option>`).join('');
+  } catch(e){ sel.innerHTML = '<option>Failed to load</option>'; }
+}
+
+async function runSim(){
+  const [market_id,event_id] = $('simMarket').value.split('|');
+  const btn = $('simRunBtn'); btn.disabled=true; btn.textContent='Running…';
+  try {
+    const body = { market_id, event_id, initial_capital:$('simCapital').value,
+      min_confidence:$('simConf').value, commission_rate:$('simComm').value, cooldown_seconds:0 };
+    const r = await (await fetch('/api/sim/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    if(!r.ok){ alert('Simulation failed: '+(r.error||'')); return; }
+    renderSim(r);
+  } finally { btn.disabled=false; btn.textContent='Run Simulation'; }
+}
+
+function renderSim(r){
+  $('simEmpty').classList.add('hidden');
+  $('simResults').classList.remove('hidden');
+  const m = r.metrics;
+  const tiles = [
+    ['Total P&L', sign(m.total_pnl)+fmtUsd(m.total_pnl), cls(m.total_pnl)],
+    ['Return', (+m.return_pct).toFixed(2)+'%', cls(m.return_pct)],
+    ['Trades', m.total_trades, ''],
+    ['Win rate', (100*+m.win_rate).toFixed(0)+'%', ''],
+    ['Sharpe', (+m.sharpe_ratio).toFixed(2), ''],
+    ['Max DD', (100*+m.max_drawdown).toFixed(1)+'%', 'neg'],
+    ['Final equity', fmtUsd(m.final_equity), ''],
+  ];
+  $('simMetrics').innerHTML = tiles.map(t=>`<div class="stat"><div class="lbl">${t[0]}</div><div class="val tnum ${t[2]}">${t[1]}</div></div>`).join('');
+  drawEquity('simChart', r.equity_curve.map(p=>+p.equity));
+  $('simTrades').innerHTML = '<thead><tr><th>Side</th><th>Market</th><th>Price</th><th>Qty</th></tr></thead><tbody>'
+    + (r.trades.length ? r.trades.map(t=>`<tr><td><span class="side ${t.side}">${t.side}</span></td><td>${esc(t.name)}</td><td class="tnum">${t.price}</td><td class="tnum">${t.qty}</td></tr>`).join('')
+       : '<tr><td colspan="4" class="empty">No trades — try lowering min confidence.</td></tr>') + '</tbody>';
+}
+
+function drawEquity(id, data){
+  const c = $(id); const w=c.clientWidth, h=c.clientHeight, dpr=window.devicePixelRatio||1;
+  c.width=w*dpr; c.height=h*dpr; const ctx=c.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!data||data.length<2){ ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--muted');
+    ctx.fillText('Not enough data points',12,24); return; }
+  const min=Math.min(...data), max=Math.max(...data), rng=(max-min)||1, pad=30;
+  const up = data[data.length-1] >= data[0];
+  const col = getComputedStyle(document.documentElement).getPropertyValue(up?'--green':'--red').trim();
+  const grid = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+  ctx.strokeStyle=grid; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){ const y=pad+(h-2*pad)*i/4; ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(w-8,y); ctx.stroke(); }
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const x=pad+(w-pad-8)*i/(data.length-1); const y=pad+(h-2*pad)*(1-(v-min)/rng); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+  ctx.font='11px sans-serif'; ctx.fillText(max.toFixed(0), 4, pad+4); ctx.fillText(min.toFixed(0), 4, h-pad+4);
+}
+window.addEventListener('resize', ()=>{ /* charts redraw on next tick */ });
+</script>
+</body>
+</html>

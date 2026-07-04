@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from oracle3.core.trading_engine import TradingEngine
+    from oracle3.dashboard.game_manager import GameManager
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +89,15 @@ def _serialize_snapshot(engine: 'TradingEngine') -> dict[str, Any]:  # noqa: C90
             continue
         spread = best_ask - best_bid
         mid = (best_bid + best_ask) / 2
-        order_books.append({
-            'symbol': ob.ticker_symbol,
-            'bid': f'{best_bid:.4f}',
-            'ask': f'{best_ask:.4f}',
-            'spread': f'{spread:.4f}',
-            'mid_pct': f'{mid * 100:.0f}',
-        })
+        order_books.append(
+            {
+                'symbol': ob.ticker_symbol,
+                'bid': f'{best_bid:.4f}',
+                'ask': f'{best_ask:.4f}',
+                'spread': f'{spread:.4f}',
+                'mid_pct': f'{mid * 100:.0f}',
+            }
+        )
 
     # Recent trades
     trades = [
@@ -116,14 +119,16 @@ def _serialize_snapshot(engine: 'TradingEngine') -> dict[str, Any]:  # noqa: C90
         try:
             raw_decisions = list(strategy.get_decisions())
             for d in raw_decisions[-30:]:
-                decisions.append({
-                    'timestamp': d.timestamp,
-                    'action': d.action,
-                    'ticker_name': (d.ticker_name or '')[:40],
-                    'confidence': float(getattr(d, 'confidence', 0.0) or 0.0),
-                    'reasoning': (getattr(d, 'reasoning', '') or '')[:80],
-                    'executed': bool(d.executed),
-                })
+                decisions.append(
+                    {
+                        'timestamp': d.timestamp,
+                        'action': d.action,
+                        'ticker_name': (d.ticker_name or '')[:40],
+                        'confidence': float(getattr(d, 'confidence', 0.0) or 0.0),
+                        'reasoning': (getattr(d, 'reasoning', '') or '')[:80],
+                        'executed': bool(d.executed),
+                    }
+                )
         except Exception:
             logger.debug('Failed to serialize decisions', exc_info=True)
 
@@ -261,7 +266,9 @@ def _serialize_snapshot(engine: 'TradingEngine') -> dict[str, Any]:  # noqa: C90
             try:
                 flash_loan_stats = getattr(fl_handler, 'stats', {}) or {}
             except Exception:
-                logger.debug('Failed to get flash loan stats from strategy', exc_info=True)
+                logger.debug(
+                    'Failed to get flash loan stats from strategy', exc_info=True
+                )
 
     # Atomic Multi-Leg Trader stats (Feature 8)
     atomic_trader_stats: dict[str, Any] = {}
@@ -382,15 +389,19 @@ def _build_dashboard_app(engine: 'TradingEngine'):  # noqa: C901
                 'max_total_exposure': str(rm.max_total_exposure),
                 'max_drawdown_pct': str(rm.max_drawdown_pct),
                 'daily_loss_limit': (
-                    str(rm.daily_loss_limit) if rm.daily_loss_limit is not None else None
+                    str(rm.daily_loss_limit)
+                    if rm.daily_loss_limit is not None
+                    else None
                 ),
                 'max_positions': rm.max_positions,
             }
-        return JSONResponse({
-            'risk_manager_active': rm is not None,
-            'risk_limits': limits,
-            'ticker_filter': engine.get_ticker_filter(),
-        })
+        return JSONResponse(
+            {
+                'risk_manager_active': rm is not None,
+                'risk_limits': limits,
+                'ticker_filter': engine.get_ticker_filter(),
+            }
+        )
 
     @app.post('/api/config')
     async def set_config(request: Request):
@@ -439,10 +450,12 @@ def _build_dashboard_app(engine: 'TradingEngine'):  # noqa: C901
         for ticker in list(md.order_books.keys()):
             if isinstance(ticker, CT):
                 continue
-            tickers.append({
-                'symbol': ticker.symbol,
-                'name': getattr(ticker, 'name', '') or ticker.symbol,
-            })
+            tickers.append(
+                {
+                    'symbol': ticker.symbol,
+                    'name': getattr(ticker, 'name', '') or ticker.symbol,
+                }
+            )
         return JSONResponse({'markets': tickers})
 
     @app.websocket('/ws')
@@ -466,6 +479,380 @@ def _build_dashboard_app(engine: 'TradingEngine'):  # noqa: C901
             ws_clients.discard(websocket)
 
     return app
+
+
+def _group_polymarket_games(markets: list[dict]) -> list[dict[str, Any]]:
+    by_event: dict[str, dict[str, Any]] = {}
+    for m in markets:
+        key = m.get('event_id') or m.get('id') or ''
+        entry = by_event.setdefault(
+            key,
+            {
+                'key': f'poly:{key}',
+                'exchange': 'polymarket',
+                'title': m.get('event_title') or m.get('question') or 'Untitled',
+                'markets': [],
+            },
+        )
+        entry['markets'].append(
+            {
+                'market_id': m.get('id', ''),
+                'token_id': m.get('token_id', ''),
+                'name': m.get('question', ''),
+                'event_id': m.get('event_id', ''),
+                'bid': m.get('best_bid', ''),
+                'ask': m.get('best_ask', ''),
+                'close': m.get('end_date', ''),
+            }
+        )
+    return list(by_event.values())
+
+
+def _group_kalshi_games(markets: list[dict]) -> list[dict[str, Any]]:
+    by_event: dict[str, dict[str, Any]] = {}
+    for m in markets:
+        key = m.get('event_ticker') or m.get('ticker') or ''
+        entry = by_event.setdefault(
+            key,
+            {
+                'key': f'kalshi:{key}',
+                'exchange': 'kalshi',
+                'title': m.get('title') or key,
+                'markets': [],
+            },
+        )
+        entry['markets'].append(
+            {
+                'market_id': m.get('ticker', ''),
+                'token_id': m.get('ticker', ''),
+                'name': m.get('title', ''),
+                'event_id': m.get('event_ticker', ''),
+                # Kalshi quotes cents (0-100); normalize to 0-1 like Polymarket.
+                'bid': (m['yes_bid'] / 100) if m.get('yes_bid') else '',
+                'ask': (m['yes_ask'] / 100) if m.get('yes_ask') else '',
+                'close': m.get('close_time', ''),
+            }
+        )
+    return list(by_event.values())
+
+
+async def _search_games(query: str, exchange: str) -> list[dict[str, Any]]:
+    """Search live markets and group them into 'games' by event.
+
+    ``exchange`` is 'polymarket', 'kalshi' or 'both'. Reuses the read-only
+    per-exchange search helpers from ``market_commands``.
+    """
+    from oracle3.cli import market_commands as mc
+
+    games: list[dict[str, Any]] = []
+
+    if exchange in ('polymarket', 'both'):
+        try:
+            markets = await mc._polymarket_search_markets(query, 40)
+        except Exception:
+            logger.debug('polymarket search failed', exc_info=True)
+            markets = []
+        games.extend(_group_polymarket_games(markets))
+
+    if exchange in ('kalshi', 'both'):
+        try:
+            markets = await mc._kalshi_search_markets(query, 30, None, None)
+        except Exception:
+            logger.debug('kalshi search failed (needs keys?)', exc_info=True)
+            markets = []
+        games.extend(_group_kalshi_games(markets))
+
+    # Cap total groups so the results panel stays scannable.
+    return games[:30]
+
+
+async def _list_live_games(exchange: str) -> list[dict[str, Any]]:
+    """List currently open single-matchup games, soonest-closing first.
+
+    No search term — this is the "what can I bet on right now" browse view,
+    as opposed to ``_search_games`` which requires a query.
+    """
+    from oracle3.cli import market_commands as mc
+
+    games: list[dict[str, Any]] = []
+
+    if exchange in ('polymarket', 'both'):
+        try:
+            markets = await mc._polymarket_live_games(60)
+        except Exception:
+            logger.debug('polymarket live-games listing failed', exc_info=True)
+            markets = []
+        games.extend(_group_polymarket_games(markets))
+
+    if exchange in ('kalshi', 'both'):
+        try:
+            markets = await mc._kalshi_live_games(40, None, None)
+        except Exception:
+            logger.debug('kalshi live-games listing failed (needs keys?)', exc_info=True)
+            markets = []
+        games.extend(_group_kalshi_games(markets))
+
+    return games[:30]
+
+
+async def _list_category_games(category: str, exchange: str) -> list[dict[str, Any]]:
+    """Browse open markets in a topic (Sports, Politics, World Cup, …).
+
+    ``category='all'`` (or an unknown key) keeps the original single-matchup
+    "what's live right now" behavior (``_list_live_games``); named categories
+    use the Gamma tag / Kalshi series-category taxonomy in
+    ``market_commands.CATEGORIES`` instead, which also surfaces non-matchup
+    markets (e.g. World Cup outright winner) that the sports-only default
+    filters out.
+    """
+    from oracle3.cli import market_commands as mc
+
+    spec = mc.CATEGORIES.get(category)
+    if spec is None:
+        return await _list_live_games(exchange)
+
+    games: list[dict[str, Any]] = []
+
+    if exchange in ('polymarket', 'both'):
+        try:
+            markets = await mc._polymarket_category_games(spec['poly_tag'], 60)
+        except Exception:
+            logger.debug('polymarket category listing failed (%s)', category, exc_info=True)
+            markets = []
+        games.extend(_group_polymarket_games(markets))
+
+    if exchange in ('kalshi', 'both'):
+        try:
+            markets = await mc._kalshi_category_games(
+                spec['kalshi_category'], spec['kalshi_prefix'], 40, None, None
+            )
+        except Exception:
+            logger.debug('kalshi category listing failed (%s)', category, exc_info=True)
+            markets = []
+        games.extend(_group_kalshi_games(markets))
+
+    return games[:30]
+
+
+def _build_games_app(manager: 'GameManager'):  # noqa: C901
+    """FastAPI app for the multi-game live + simulation dashboard."""
+    try:
+        from fastapi import FastAPI, Request, WebSocket
+        from fastapi.responses import FileResponse, JSONResponse
+    except ImportError as exc:
+        raise RuntimeError(
+            'FastAPI not installed. Install with: pip install fastapi uvicorn'
+        ) from exc
+
+    from decimal import Decimal
+
+    from oracle3.dashboard.game_manager import GameMarket
+
+    app = FastAPI(title='Oracle3 Games Dashboard', version='1.0.0')
+
+    @app.on_event('startup')
+    async def _startup():
+        # Start resolution polling inside the server's own event loop so all
+        # game engines + feed tasks share one loop.
+        manager.start_resolution_polling()
+
+    @app.get('/')
+    async def index():
+        return FileResponse(STATIC_DIR / 'games.html', media_type='text/html')
+
+    @app.get('/api/search')
+    async def search(q: str = '', exchange: str = 'both'):
+        if not q.strip():
+            return JSONResponse({'games': []})
+        return JSONResponse({'games': await _search_games(q, exchange)})
+
+    @app.get('/api/live')
+    async def live(exchange: str = 'both', category: str = 'all'):
+        return JSONResponse({'games': await _list_category_games(category, exchange)})
+
+    @app.get('/api/games')
+    async def get_games():
+        return JSONResponse(manager.aggregate_state())
+
+    @app.post('/api/games')
+    async def add_game(request: Request):
+        body = await request.json()
+        exchange = body.get('exchange', 'polymarket')
+        title = body.get('title', 'Game')
+        raw_markets = body.get('markets', [])
+        alloc = body.get('allocation')
+        allocation = Decimal(str(alloc)) if alloc not in (None, '') else None
+
+        markets: list[GameMarket] = []
+        for rm in raw_markets:
+            no_token = rm.get('no_token_id', '')
+            if exchange == 'polymarket' and not no_token and rm.get('market_id'):
+                try:
+                    from oracle3.cli.market_commands import _polymarket_market_info
+
+                    info = await _polymarket_market_info(rm['market_id'])
+                    if info:
+                        no_token = info.get('no_token_id', '')
+                except Exception:
+                    logger.debug('market info enrich failed', exc_info=True)
+            markets.append(
+                GameMarket(
+                    market_id=rm.get('market_id', ''),
+                    token_id=rm.get('token_id', ''),
+                    no_token_id=no_token,
+                    event_id=rm.get('event_id', ''),
+                    name=rm.get('name', ''),
+                )
+            )
+        if not markets:
+            return JSONResponse({'ok': False, 'error': 'no markets'}, status_code=400)
+
+        session = await manager.add_game(title, exchange, markets, allocation)
+        return JSONResponse(
+            {'ok': True, 'game_id': session.game_id, 'status': session.status}
+        )
+
+    @app.delete('/api/games/{game_id}')
+    async def delete_game(game_id: str):
+        ok = await manager.remove_game(game_id)
+        return JSONResponse({'ok': ok})
+
+    @app.post('/api/games/{game_id}/bot')
+    async def toggle_bot(game_id: str, request: Request):
+        body = await request.json()
+        action = body.get('action', 'pause')
+        ok = (
+            manager.pause_bot(game_id)
+            if action == 'pause'
+            else manager.resume_bot(game_id)
+        )
+        return JSONResponse({'ok': ok})
+
+    @app.get('/api/games/{game_id}/strategy')
+    async def get_strategy(game_id: str):
+        cfg = manager.get_strategy_config(game_id)
+        if cfg is None:
+            return JSONResponse({'ok': False, 'error': 'game not found'}, status_code=404)
+        return JSONResponse({'ok': True, **cfg})
+
+    @app.post('/api/games/{game_id}/strategy')
+    async def set_strategy(game_id: str, request: Request):
+        body = await request.json()
+        kwargs: dict[str, Any] = {}
+        for key in ('min_edge', 'min_confidence', 'cooldown_seconds'):
+            if body.get(key) not in (None, ''):
+                try:
+                    kwargs[key] = float(body[key])
+                except (TypeError, ValueError):
+                    return JSONResponse(
+                        {'ok': False, 'error': f'invalid {key}'}, status_code=400
+                    )
+        ok = manager.set_strategy_config(game_id, **kwargs)
+        return JSONResponse({'ok': ok}, status_code=200 if ok else 404)
+
+    @app.post('/api/games/{game_id}/order')
+    async def manual_order(game_id: str, request: Request):
+        body = await request.json()
+        result = await manager.manual_order(
+            game_id,
+            market_id=body.get('market_id', ''),
+            side=body.get('side', 'buy'),
+            price=float(body.get('price', 0)),
+            quantity=float(body.get('quantity', 0)),
+            is_no=bool(body.get('is_no', False)),
+        )
+        status = 200 if result.get('ok') else 400
+        return JSONResponse(result, status_code=status)
+
+    @app.post('/api/command/estop')
+    async def estop():
+        manager.emergency_stop()
+        return JSONResponse({'ok': True, 'status': 'halted'})
+
+    @app.get('/api/sim/markets')
+    async def sim_markets(history_file: str = 'data/backtest_sample.jsonl'):
+        from oracle3.dashboard.sim import list_sim_markets
+
+        try:
+            return JSONResponse({'markets': list_sim_markets(history_file)})
+        except Exception as exc:
+            return JSONResponse({'markets': [], 'error': str(exc)}, status_code=400)
+
+    @app.post('/api/sim/run')
+    async def sim_run(request: Request):
+        from oracle3.dashboard.sim import run_simulation
+
+        body = await request.json()
+        kwargs: dict[str, Any] = {}
+        for key in ('min_confidence', 'min_edge', 'cooldown_seconds'):
+            if body.get(key) not in (None, ''):
+                kwargs[key] = (
+                    int(body[key]) if key == 'cooldown_seconds' else float(body[key])
+                )
+        try:
+            result = await run_simulation(
+                history_file=body.get('history_file', 'data/backtest_sample.jsonl'),
+                market_id=str(body.get('market_id', '')),
+                event_id=str(body.get('event_id', '')),
+                initial_capital=Decimal(str(body.get('initial_capital', '1000'))),
+                commission_rate=Decimal(str(body.get('commission_rate', '0'))),
+                strategy_kwargs=kwargs,
+            )
+            return JSONResponse({'ok': True, **result})
+        except Exception as exc:
+            logger.debug('sim run failed', exc_info=True)
+            return JSONResponse({'ok': False, 'error': str(exc)}, status_code=400)
+
+    @app.websocket('/ws')
+    async def websocket_endpoint(websocket: WebSocket):
+        from starlette.websockets import WebSocketDisconnect
+
+        await websocket.accept()
+        try:
+            while True:
+                try:
+                    await websocket.send_json(manager.aggregate_state())
+                except Exception:
+                    logger.debug('WS send failed', exc_info=True)
+                    break
+                await asyncio.sleep(2.0)
+        except WebSocketDisconnect:
+            pass
+
+    return app
+
+
+class GamesDashboardServer:
+    """Runs the multi-game dashboard (uvicorn in a background thread)."""
+
+    def __init__(self, manager: 'GameManager', host: str = '0.0.0.0', port: int = 3000):
+        self.manager = manager
+        self.host = host
+        self.port = port
+        self._server_thread: threading.Thread | None = None
+        self._uvicorn_server: Any = None
+
+    def start(self) -> None:
+        import uvicorn
+
+        app = _build_games_app(self.manager)
+        config = uvicorn.Config(
+            app, host=self.host, port=self.port, log_level='warning'
+        )
+        self._uvicorn_server = uvicorn.Server(config)
+
+        def _run():
+            asyncio.run(self._uvicorn_server.serve())
+
+        self._server_thread = threading.Thread(
+            target=_run, daemon=True, name='games-dashboard'
+        )
+        self._server_thread.start()
+        logger.info('Games dashboard on http://%s:%d', self.host, self.port)
+
+    def stop(self) -> None:
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
 
 
 class DashboardServer:
@@ -503,7 +890,9 @@ class DashboardServer:
         def _run():
             asyncio.run(self._uvicorn_server.serve())
 
-        self._server_thread = threading.Thread(target=_run, daemon=True, name='dashboard')
+        self._server_thread = threading.Thread(
+            target=_run, daemon=True, name='dashboard'
+        )
         self._server_thread.start()
         logger.info('Dashboard server started on http://%s:%d', self.host, self.port)
 
