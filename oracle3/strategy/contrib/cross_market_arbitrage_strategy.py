@@ -2,13 +2,13 @@
 
 Detects same-event price discrepancies across prediction market platforms
 and trades when the spread exceeds a configurable threshold. Uses a
-position state machine to manage entries and exits, and applies
-conservative per-side fee modeling for accurate edge calculation.
+position state machine to manage entries and exits, and applies each
+leg's real exchange fee schedule for accurate edge calculation.
 
 Agent tool: find_arbitrage_opportunities() -> list[dict]
 
 v2 improvements over v1:
-- Per-side fee modeling (conservative 0.5% per side, net_edge = gross - 2*fee)
+- Real per-leg fee modeling (Kalshi's nonlinear formula, Polymarket's near-zero rate)
 - Position state machine (flat -> long_a_short_b / long_b_short_a -> flat)
 - Exit logic when spread collapses (not just entry)
 - Best bid/ask from order books instead of just last price
@@ -26,15 +26,13 @@ from difflib import SequenceMatcher
 from typing import Any, ClassVar
 
 from oracle3.events.events import Event, OrderBookEvent, PriceChangeEvent
+from oracle3.pricing.fees import round_trip_fee_for_legs
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative fee estimate per side (buy + sell round-trip = 2x this)
-_FEE_PER_SIDE = Decimal('0.005')
 
 _STOPWORDS = frozenset(
     {'will', 'the', 'a', 'an', 'of', 'in', 'on', 'by', 'to', 'for', 'be', 'is', 'at'}
@@ -206,7 +204,7 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
         exit_threshold: float = 0.005,
         trade_size: float = 10.0,
         cooldown_seconds: float = 60.0,
-        fee_per_side: float = 0.005,
+        fee_per_side: float = 0.07,
         min_similarity: float = 0.60,
         max_hold_seconds: float = 3600.0,
     ) -> None:
@@ -222,8 +220,10 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
         cooldown_seconds:
             Minimum seconds between arb entries on the same pair.
         fee_per_side:
-            Conservative fee estimate per side (default 0.5% = 0.005).
-            Total round-trip fee = 2 * fee_per_side.
+            Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+            standard rate). Fee is nonlinear in price and computed per-leg
+            from the real formula for Kalshi legs; non-Kalshi legs use
+            the near-zero rate verified for Polymarket.
         min_similarity:
             Minimum name similarity score (0-1) for cross-platform matching.
         max_hold_seconds:
@@ -300,7 +300,11 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
     # ------------------------------------------------------------------
 
     def _compute_edge(
-        self, buy_price: Decimal, sell_price: Decimal
+        self,
+        ticker_buy_yes: Ticker,
+        buy_price: Decimal,
+        ticker_buy_no: Ticker,
+        sell_price: Decimal,
     ) -> tuple[Decimal, Decimal, Decimal]:
         """Compute gross edge, fee cost, and net edge for a pair.
 
@@ -310,12 +314,27 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
         For buy_a + sell_b (A cheaper):
             gross_edge = price_b - price_a
             (we buy A YES at ask_a, and buy B NO at (1 - bid_b))
-            net_edge = gross_edge - 2 * fee_per_side
+
+        Fees are computed per-leg from each ticker's real exchange fee
+        schedule (Kalshi's is nonlinear in price; non-Kalshi legs use
+        the near-zero rate this repo has verified for Polymarket -- an
+        approximation for Solana/DFlow, whose gas cost isn't priced here).
 
         Returns (gross_edge, fees, net_edge).
         """
         gross_edge = sell_price - buy_price
-        fees = self.fee_per_side * 2
+        no_price = Decimal('1') - sell_price
+        fees = Decimal(
+            str(
+                round_trip_fee_for_legs(
+                    [
+                        (ticker_buy_yes, float(buy_price)),
+                        (ticker_buy_no, float(no_price)),
+                    ],
+                    float(self.fee_per_side),
+                )
+            )
+        )
         net_edge = gross_edge - fees
         return gross_edge, fees, net_edge
 
@@ -366,10 +385,10 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
 
                     # Direction 1: A cheaper -> buy A YES (at ask_a), sell B YES (at bid_b)
                     # Equivalent to: buy A YES + buy B NO
-                    gross_1, fees_1, net_1 = self._compute_edge(ask_a, bid_b)
+                    gross_1, fees_1, net_1 = self._compute_edge(ta, ask_a, tb, bid_b)
 
                     # Direction 2: B cheaper -> buy B YES (at ask_b), sell A YES (at bid_a)
-                    gross_2, fees_2, net_2 = self._compute_edge(ask_b, bid_a)
+                    gross_2, fees_2, net_2 = self._compute_edge(tb, ask_b, ta, bid_a)
 
                     # Pick the better direction
                     if net_1 >= net_2 and net_1 > 0:
@@ -483,9 +502,7 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
     # Entry logic
     # ------------------------------------------------------------------
 
-    async def _enter_arb(
-        self, trader: Trader, opp: dict[str, Any], now: float
-    ) -> None:
+    async def _enter_arb(self, trader: Trader, opp: dict[str, Any], now: float) -> None:
         """Enter an arbitrage position: buy YES cheap + buy NO on the other."""
         label = opp['label']
         direction = opp['direction']
@@ -593,8 +610,11 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
         if executed:
             logger.info(
                 'ARB ENTRY %s: %s vs %s, net_edge=%.4f, profit=%.4f',
-                direction, market_a, market_b,
-                opp['net_edge'], opp['expected_profit'],
+                direction,
+                market_a,
+                market_b,
+                opp['net_edge'],
+                opp['expected_profit'],
             )
         elif leg1_ok and not leg2_ok:
             logger.warning(
@@ -624,6 +644,8 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
 
             symbol_a = pos.ticker_a_symbol
             symbol_b = pos.ticker_b_symbol
+            ticker_a = self._ticker_map.get(symbol_a)
+            ticker_b = self._ticker_map.get(symbol_b)
 
             # Get current prices
             bid_a = self._get_effective_sell_price(symbol_a)
@@ -633,6 +655,8 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
 
             if bid_a is None or ask_a is None or bid_b is None or ask_b is None:
                 continue
+            if ticker_a is None or ticker_b is None:
+                continue
 
             # Compute current edge in same direction as entry
             if pos.state == 'long_a_short_b':
@@ -640,10 +664,18 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
                 # To exit: sell A YES (at bid_a) and sell B NO (at 1-ask_b).
                 # Current edge for same-direction re-entry:
                 current_gross = bid_b - ask_a
+                current_fees = round_trip_fee_for_legs(
+                    [(ticker_a, float(ask_a)), (ticker_b, float(1 - bid_b))],
+                    float(self.fee_per_side),
+                )
             else:  # long_b_short_a
                 current_gross = bid_a - ask_b
+                current_fees = round_trip_fee_for_legs(
+                    [(ticker_b, float(ask_b)), (ticker_a, float(1 - bid_a))],
+                    float(self.fee_per_side),
+                )
 
-            current_net = current_gross - self.fee_per_side * 2
+            current_net = current_gross - Decimal(str(current_fees))
 
             # Determine exit reason
             exit_reason: str | None = None
@@ -671,12 +703,20 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
                 # Bought B NO at (1-entry_price_b), selling at (1-ask_b)
                 pnl_b = (1.0 - float(ask_b)) - (1.0 - pos.entry_price_b)
                 pnl_gross = pnl_a + pnl_b
+                entry_fees = round_trip_fee_for_legs(
+                    [(ticker_a, pos.entry_price_a), (ticker_b, 1 - pos.entry_price_b)],
+                    float(self.fee_per_side),
+                )
             else:
                 pnl_b = float(bid_b) - pos.entry_price_b
                 pnl_a = (1.0 - float(ask_a)) - (1.0 - pos.entry_price_a)
                 pnl_gross = pnl_a + pnl_b
+                entry_fees = round_trip_fee_for_legs(
+                    [(ticker_b, pos.entry_price_b), (ticker_a, 1 - pos.entry_price_a)],
+                    float(self.fee_per_side),
+                )
 
-            pnl_net = pnl_gross - float(self.fee_per_side * 4)  # entry + exit fees
+            pnl_net = pnl_gross - entry_fees  # entry + exit fees, per real fee schedule
 
             self.record_decision(
                 ticker_name=label[:40],
@@ -706,8 +746,12 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
             logger.info(
                 'ARB EXIT %s (%s): entry_edge=%.4f current=%.4f '
                 'pnl_net=%.4f hold=%.0fs',
-                label[:30], exit_reason, pos.entry_net_edge,
-                float(current_net), pnl_net, hold_time,
+                label[:30],
+                exit_reason,
+                pos.entry_net_edge,
+                float(current_net),
+                pnl_net,
+                hold_time,
             )
 
         # Reset closed positions to flat
@@ -724,8 +768,10 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
             symbol = position.ticker.symbol
             # Check if this position belongs to our arb pair
             if symbol not in (
-                pos.ticker_a_symbol, pos.ticker_b_symbol,
-                f'{pos.ticker_a_symbol}_NO', f'{pos.ticker_b_symbol}_NO',
+                pos.ticker_a_symbol,
+                pos.ticker_b_symbol,
+                f'{pos.ticker_a_symbol}_NO',
+                f'{pos.ticker_b_symbol}_NO',
             ):
                 # Also check via substring for NO tickers with different naming
                 ticker_a_base = pos.ticker_a_symbol.replace('_NO', '')
@@ -736,8 +782,11 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
             best_bid = trader.market_data.get_best_bid(position.ticker)
             if best_bid is not None:
                 ok = await self._place_arb_leg(
-                    trader, position.ticker, TradeSide.SELL,
-                    best_bid.price, f'exit_{symbol[:20]}',
+                    trader,
+                    position.ticker,
+                    TradeSide.SELL,
+                    best_bid.price,
+                    f'exit_{symbol[:20]}',
                 )
                 if ok:
                     any_sold = True
@@ -758,25 +807,35 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
         """Place one leg of an arbitrage trade. Returns True if accepted."""
         try:
             result = await trader.place_order(
-                side=side, ticker=ticker,
-                limit_price=price, quantity=self.trade_size,
+                side=side,
+                ticker=ticker,
+                limit_price=price,
+                quantity=self.trade_size,
             )
             if result.failure_reason:
                 logger.warning(
                     'Arb leg failed [%s]: %s %s @ %s - %s',
-                    leg_label, side.value, ticker.symbol[:20],
-                    price, result.failure_reason,
+                    leg_label,
+                    side.value,
+                    ticker.symbol[:20],
+                    price,
+                    result.failure_reason,
                 )
                 return False
             logger.info(
                 'Arb leg placed [%s]: %s %s @ %s',
-                leg_label, side.value, ticker.symbol[:20], price,
+                leg_label,
+                side.value,
+                ticker.symbol[:20],
+                price,
             )
             return True
         except Exception:
             logger.exception(
                 'Error placing arb leg [%s]: %s %s',
-                leg_label, side.value, ticker.symbol[:20],
+                leg_label,
+                side.value,
+                ticker.symbol[:20],
             )
             return False
 
@@ -809,9 +868,7 @@ class CrossMarketArbitrageStrategy(QuantStrategy):
     def active_positions(self) -> dict[str, ArbPosition]:
         """Return all non-flat arb positions."""
         return {
-            label: pos
-            for label, pos in self._positions.items()
-            if pos.state != 'flat'
+            label: pos for label, pos in self._positions.items() if pos.state != 'flat'
         }
 
     @property

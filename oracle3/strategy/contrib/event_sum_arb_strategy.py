@@ -37,15 +37,13 @@ import time
 from decimal import Decimal
 
 from oracle3.events.events import Event, OrderBookEvent, PriceChangeEvent
+from oracle3.pricing.fees import POLYMARKET_FEE_RATE
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import PolyMarketTicker, Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative per-side fee estimate (0.5%)
-_FEE_PER_SIDE = Decimal('0.005')
 
 
 class EventSumArbStrategy(QuantStrategy):
@@ -67,7 +65,9 @@ class EventSumArbStrategy(QuantStrategy):
     min_markets:
         Require at least this many markets before attempting arb (default 2).
     fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+        Per-side fee rate. This strategy only trades Polymarket tickers,
+        whose CLOB currently charges ~0 maker/taker fee, so it defaults
+        to that real rate rather than a guessed flat percentage.
     """
 
     name = 'event_sum_arb'
@@ -81,7 +81,7 @@ class EventSumArbStrategy(QuantStrategy):
         trade_size: float = 10.0,
         cooldown_seconds: float = 120.0,
         min_markets: int = 2,
-        fee_rate: float = 0.005,
+        fee_rate: float = float(POLYMARKET_FEE_RATE),
     ) -> None:
         super().__init__()
         self.event_id = event_id
@@ -187,7 +187,11 @@ class EventSumArbStrategy(QuantStrategy):
 
         logger.info(
             'EventSumArb: %s event=%s sum_yes=%.4f n=%d edge=%.4f',
-            action, self.event_id[:16], float(sum_yes), n, float(best_edge),
+            action,
+            self.event_id[:16],
+            float(sum_yes),
+            n,
+            float(best_edge),
         )
 
         executed_legs = 0
@@ -222,7 +226,8 @@ class EventSumArbStrategy(QuantStrategy):
                 if result.failure_reason:
                     logger.warning(
                         'EventSumArb leg failed: %s - %s',
-                        mid[:16], result.failure_reason,
+                        mid[:16],
+                        result.failure_reason,
                     )
                     failed_legs += 1
                 else:

@@ -61,20 +61,20 @@ class TestNoRiskManager:
         """Test that NoRiskManager always allows trades."""
         rm = NoRiskManager()
 
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('1000000'), Decimal('1.0')
         )
-        assert result is True
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_allows_sells(self, test_ticker: PolyMarketTicker):
         """Test that NoRiskManager allows sells."""
         rm = NoRiskManager()
 
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.SELL, Decimal('100'), Decimal('0.50')
         )
-        assert result is True
+        assert ok is True
 
 
 class TestStandardRiskManager:
@@ -94,10 +94,10 @@ class TestStandardRiskManager:
             max_total_exposure=Decimal('50000'),
         )
 
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('100'), Decimal('0.50')
         )
-        assert result is True
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_trade_exceeds_single_trade_limit(
@@ -114,10 +114,10 @@ class TestStandardRiskManager:
         )
 
         # Trade value: 500 * 0.50 = 250 > 100
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('500'), Decimal('0.50')
         )
-        assert result is False
+        assert ok is False
 
     @pytest.mark.asyncio
     async def test_trade_exceeds_position_limit(
@@ -135,10 +135,10 @@ class TestStandardRiskManager:
         )
 
         # This would create position of 500 * 0.50 = 250 > 100
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('500'), Decimal('0.50')
         )
-        assert result is False
+        assert ok is False
 
     @pytest.mark.asyncio
     async def test_sell_always_passes_position_limit(
@@ -166,10 +166,10 @@ class TestStandardRiskManager:
         )
 
         # Sell should pass even though current position exceeds limit
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.SELL, Decimal('100'), Decimal('0.50')
         )
-        assert result is True
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_max_positions_limit(
@@ -209,10 +209,10 @@ class TestStandardRiskManager:
         )
 
         # New position should be rejected
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('10'), Decimal('0.50')
         )
-        assert result is False
+        assert ok is False
 
     @pytest.mark.asyncio
     async def test_adding_to_existing_position_allowed(
@@ -262,10 +262,10 @@ class TestStandardRiskManager:
         )
 
         # Adding to existing position should be allowed
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             test_ticker, TradeSide.BUY, Decimal('10'), Decimal('0.50')
         )
-        assert result is True
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_cash_ticker_bypasses_checks(
@@ -281,10 +281,10 @@ class TestStandardRiskManager:
         )
 
         # Cash ticker should bypass all checks
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             CashTicker.POLYMARKET_USDC, TradeSide.BUY, Decimal('1000000'), Decimal('1')
         )
-        assert result is True
+        assert ok is True
 
     def test_get_current_drawdown(
         self,

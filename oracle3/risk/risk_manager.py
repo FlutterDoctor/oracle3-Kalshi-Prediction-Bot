@@ -14,8 +14,12 @@ class RiskManager(ABC):
     @abstractmethod
     async def check_trade(
         self, ticker: Ticker, side: TradeSide, quantity: Decimal, price: Decimal
-    ) -> bool:
-        """Check if a trade meets risk management criteria."""
+    ) -> tuple[bool, str]:
+        """Check if a trade meets risk management criteria.
+
+        Returns:
+            (ok, reason) where reason is a non-empty code when ok is False.
+        """
         pass
 
 
@@ -24,8 +28,8 @@ class NoRiskManager(RiskManager):
 
     async def check_trade(
         self, ticker: Ticker, side: TradeSide, quantity: Decimal, price: Decimal
-    ) -> bool:
-        return True
+    ) -> tuple[bool, str]:
+        return True, ''
 
 
 class StandardRiskManager(RiskManager):
@@ -183,7 +187,7 @@ class StandardRiskManager(RiskManager):
 
     async def check_trade(
         self, ticker: Ticker, side: TradeSide, quantity: Decimal, price: Decimal
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """
         Check if a trade meets all risk management criteria.
 
@@ -194,11 +198,11 @@ class StandardRiskManager(RiskManager):
             price: Price per unit
 
         Returns:
-            True if the trade is allowed, False otherwise
+            (ok, reason) where reason is a non-empty code when ok is False.
         """
         # Skip risk checks for cash tickers
         if isinstance(ticker, CashTicker):
-            return True
+            return True, ''
 
         # Check trade size limit
         if not self._check_trade_size(quantity, price):
@@ -207,7 +211,7 @@ class StandardRiskManager(RiskManager):
                 quantity * price,
                 self.max_single_trade_size,
             )
-            return False
+            return False, 'trade_size_limit_exceeded'
 
         # Check position limit
         if not self._check_position_limit(ticker, side, quantity, price):
@@ -215,7 +219,7 @@ class StandardRiskManager(RiskManager):
                 'Risk check failed: Position would exceed limit %s',
                 self.max_position_size,
             )
-            return False
+            return False, 'position_size_limit_exceeded'
 
         # Check total exposure
         if not self._check_total_exposure(side, quantity, price):
@@ -223,7 +227,7 @@ class StandardRiskManager(RiskManager):
                 'Risk check failed: Total exposure would exceed limit %s',
                 self.max_total_exposure,
             )
-            return False
+            return False, 'total_exposure_limit_exceeded'
 
         # Check drawdown
         if not self._check_drawdown():
@@ -231,7 +235,7 @@ class StandardRiskManager(RiskManager):
                 'Risk check failed: Drawdown exceeds limit %s%%',
                 self.max_drawdown_pct * 100,
             )
-            return False
+            return False, 'drawdown_limit_exceeded'
 
         # Check daily loss
         if not self._check_daily_loss():
@@ -239,16 +243,16 @@ class StandardRiskManager(RiskManager):
                 'Risk check failed: Daily loss exceeds limit %s',
                 self.daily_loss_limit,
             )
-            return False
+            return False, 'daily_loss_limit_exceeded'
 
         # Check max positions
         if not self._check_max_positions(ticker, side):
             logger.warning(
                 'Risk check failed: Would exceed max positions %s', self.max_positions
             )
-            return False
+            return False, 'max_positions_exceeded'
 
-        return True
+        return True, ''
 
     def check_portfolio_health(self) -> tuple[bool, str]:
         """Post-trade/runtime health check for hard risk breaches.

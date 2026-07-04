@@ -23,15 +23,13 @@ import time
 from decimal import Decimal
 
 from oracle3.events.events import Event, PriceChangeEvent
+from oracle3.pricing.fees import kalshi_round_trip_fee
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative per-side fee estimate (0.5%)
-_FEE_PER_SIDE = Decimal('0.005')
 
 
 class ImplicationArbStrategy(QuantStrategy):
@@ -54,7 +52,9 @@ class ImplicationArbStrategy(QuantStrategy):
     cooldown_seconds:
         Minimum seconds between successive entry attempts.
     fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate). Fee is nonlinear in price -- computed per-leg
+        from the real formula rather than a flat rate.
     """
 
     name = 'implication_arb'
@@ -68,7 +68,7 @@ class ImplicationArbStrategy(QuantStrategy):
         trade_size: float = 10.0,
         min_edge: float = 0.01,
         cooldown_seconds: float = 120.0,
-        fee_rate: float = 0.005,
+        fee_rate: float = 0.07,
     ) -> None:
         super().__init__()
         self._id_a = market_id_a
@@ -103,10 +103,9 @@ class ImplicationArbStrategy(QuantStrategy):
         self, trader: Trader, market_id: str, *, yes: bool = True
     ) -> Ticker | None:
         for ticker in trader.market_data.order_books:
-            is_no = (
-                ticker.symbol.endswith('_NO')
-                or (getattr(ticker, 'name', '') or '').startswith('NO ')
-            )
+            is_no = ticker.symbol.endswith('_NO') or (
+                getattr(ticker, 'name', '') or ''
+            ).startswith('NO ')
             if yes and is_no:
                 continue
             if not yes and not is_no:
@@ -119,8 +118,14 @@ class ImplicationArbStrategy(QuantStrategy):
     # -- Fee helpers ----------------------------------------------------------
 
     def _fee_cost_per_unit(self) -> Decimal:
-        """Round-trip fee cost per unit of trade_size (2 legs x 2 sides)."""
-        return self.fee_rate * Decimal('4')
+        """Real round-trip fee across both legs (A's NO side, B's YES side)."""
+        no_price_a = float(Decimal('1') - (self._price_a or Decimal('0')))
+        price_b = float(self._price_b or Decimal('0'))
+        fee_multiplier = float(self.fee_rate)
+        fee = kalshi_round_trip_fee(no_price_a, fee_multiplier) + kalshi_round_trip_fee(
+            price_b, fee_multiplier
+        )
+        return Decimal(str(fee))
 
     # -- Core logic -----------------------------------------------------------
 
@@ -189,8 +194,10 @@ class ImplicationArbStrategy(QuantStrategy):
             no_price = Decimal('1') - self._price_a
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a_no,
-                    limit_price=no_price, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a_no,
+                    limit_price=no_price,
+                    quantity=self.trade_size,
                 )
                 if result.failure_reason:
                     logger.warning(
@@ -204,8 +211,10 @@ class ImplicationArbStrategy(QuantStrategy):
         if ticker_b and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b,
-                    limit_price=self._price_b, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b,
+                    limit_price=self._price_b,
+                    quantity=self.trade_size,
                 )
                 if result.failure_reason:
                     logger.warning(
@@ -236,7 +245,10 @@ class ImplicationArbStrategy(QuantStrategy):
         )
         logger.info(
             'ENTER implication arb: sell A=%s buy B=%s violation=%.4f legs=%d/2',
-            self._price_a, self._price_b, violation, executed_legs,
+            self._price_a,
+            self._price_b,
+            violation,
+            executed_legs,
         )
 
     async def _exit(self, trader: Trader, violation: Decimal) -> None:
@@ -248,8 +260,10 @@ class ImplicationArbStrategy(QuantStrategy):
                 if best_bid:
                     try:
                         result = await trader.place_order(
-                            side=TradeSide.SELL, ticker=pos.ticker,
-                            limit_price=best_bid.price, quantity=pos.quantity,
+                            side=TradeSide.SELL,
+                            ticker=pos.ticker,
+                            limit_price=best_bid.price,
+                            quantity=pos.quantity,
                         )
                         if not result.failure_reason:
                             executed_legs += 1

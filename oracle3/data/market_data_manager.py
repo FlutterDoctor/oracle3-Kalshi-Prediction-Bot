@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass
 from decimal import Decimal
@@ -46,6 +47,7 @@ class MarketDataManager:
             maxlen=max_timeline_events
         )
         self._next_market_sequence = 1
+        self._last_seen: dict[Ticker, float] = {}
 
     def update_order_book(self, ticker: Ticker, order_book: OrderBook) -> None:
         self.order_books[ticker] = order_book
@@ -223,6 +225,14 @@ class MarketDataManager:
         self._next_market_sequence += 1
         self._market_timeline.append(point)
         self._history_buffer(ticker).append(point)
+        self._last_seen[ticker] = time.monotonic()
+
+    def get_last_seen(self, ticker: Ticker) -> float | None:
+        """``time.monotonic()`` timestamp of the last event for ``ticker``.
+
+        Used by the dashboard to show data freshness ("updated Ns ago").
+        """
+        return self._last_seen.get(ticker)
 
     def _history_buffer(self, ticker: Ticker) -> deque[MarketDataPoint]:
         buf = self._market_history.get(ticker)

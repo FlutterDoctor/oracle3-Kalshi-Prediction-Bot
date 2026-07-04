@@ -6,6 +6,8 @@ requiring live market connections.
 
 from __future__ import annotations
 
+import json
+import math
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -58,6 +60,19 @@ class TestFairValueStrategy:
         s = FairValueStrategy(min_edge=0.01)
         assert s.name == 'fair_value_divergence'
         assert s._min_edge == 0.01
+
+    def test_status_metrics_json_serializable_before_any_calibration(self):
+        """Regression: OnlineCalibrator.report().staleness_hours is
+        float('inf') until the calibrator has seen a resolved contract,
+        and inf/nan aren't valid JSON — get_status_metrics() must normalize
+        it (to None) so the dashboard's /api/games endpoint doesn't 500."""
+        s = FairValueStrategy()
+        metrics = s.get_status_metrics()
+        assert metrics['staleness_hours'] is None
+        for value in metrics.values():
+            if isinstance(value, float):
+                assert math.isfinite(value)
+        json.dumps(metrics)  # must not raise
 
     @pytest.mark.asyncio
     async def test_ignores_extreme_prices(self):

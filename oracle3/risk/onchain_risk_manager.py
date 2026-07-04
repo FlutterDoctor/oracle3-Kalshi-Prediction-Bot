@@ -89,23 +89,24 @@ class OnChainRiskManager(RiskManager):
         side: TradeSide,
         quantity: Decimal,
         price: Decimal,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Check trade against local limits and optional on-chain simulation.
 
-        Returns True if the trade passes all checks.
+        Returns (ok, reason) where reason is non-empty when ok is False.
         """
         # Layer 1: local risk checks
-        if not await self._local_rm.check_trade(ticker, side, quantity, price):
+        ok, reason = await self._local_rm.check_trade(ticker, side, quantity, price)
+        if not ok:
             logger.warning(
                 'OnChainRiskManager: local risk check failed for %s', ticker.symbol
             )
-            return False
+            return False, reason
 
         # Track daily volume
         trade_value = quantity * price
         self._daily_volume += trade_value
 
-        return True
+        return True, ''
 
     async def simulate_transaction(self, tx_bytes: bytes) -> bool:
         """Simulate a Solana transaction via RPC.

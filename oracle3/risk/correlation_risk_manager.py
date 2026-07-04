@@ -107,18 +107,19 @@ class CorrelationAwareRiskManager(StandardRiskManager):
         side: TradeSide,
         quantity: Decimal,
         price: Decimal,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """Check trade against both standard and correlation-aware limits."""
         if isinstance(ticker, CashTicker):
-            return True
+            return True, ''
 
         # Standard checks first
-        if not await super().check_trade(ticker, side, quantity, price):
-            return False
+        ok, reason = await super().check_trade(ticker, side, quantity, price)
+        if not ok:
+            return False, reason
 
         # Correlation-aware check (only for buys / new exposure)
         if side == TradeSide.SELL:
-            return True
+            return True, ''
 
         trade_value = float(quantity * price)
         eff_exposure = self._compute_effective_exposure(
@@ -131,7 +132,7 @@ class CorrelationAwareRiskManager(StandardRiskManager):
                 eff_exposure,
                 float(self._max_eff_exposure),
             )
-            return False
+            return False, 'correlation_effective_exposure_exceeded'
 
         # Concentration check
         raw_exposure = self._compute_raw_exposure(ticker.symbol, trade_value)
@@ -143,9 +144,9 @@ class CorrelationAwareRiskManager(StandardRiskManager):
                     concentration,
                     self._max_concentration,
                 )
-                return False
+                return False, 'correlation_concentration_exceeded'
 
-        return True
+        return True, ''
 
     # ── Correlation estimation ────────────────────────────────────────────
 

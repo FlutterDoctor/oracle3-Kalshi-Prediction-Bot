@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from oracle3.data.market_data_manager import MarketDataManager
 from oracle3.position.position_manager import PositionManager
+from oracle3.pricing.fees import KALSHI_STANDARD_FEE_MULTIPLIER, kalshi_order_fee
 from oracle3.risk.risk_manager import RiskManager
 from oracle3.ticker.ticker import KalshiTicker, Ticker
 from oracle3.trader.trader import Trader
@@ -35,11 +36,11 @@ class KalshiTrader(Trader):
         position_manager: PositionManager,
         api_key_id: str | None = None,
         private_key_path: str | None = None,
-        commission_rate: Decimal = Decimal('0.0'),
+        fee_multiplier: Decimal = KALSHI_STANDARD_FEE_MULTIPLIER,
         alerter: Alerter | None = None,
     ):
         super().__init__(market_data, risk_manager, position_manager, alerter=alerter)
-        self.commission_rate = commission_rate
+        self.fee_multiplier = fee_multiplier
 
         from kalshi_python import Configuration
         from kalshi_python.api.portfolio_api import PortfolioApi
@@ -157,7 +158,7 @@ class KalshiTrader(Trader):
         filled_quantity = Decimal(str(filled_count))
         filled_price = limit_price
         remaining = Decimal(str(remaining_count))
-        commission = filled_quantity * filled_price * self.commission_rate
+        commission = kalshi_order_fee(filled_count, filled_price, self.fee_multiplier)
 
         trade = Trade(
             side=side,
@@ -231,8 +232,8 @@ class KalshiTrader(Trader):
         # Check cash
         if side == TradeSide.BUY:
             cash_position = self.position_manager.get_position(ticker.collateral)
-            cash_required = (
-                quantity * limit_price * (Decimal('1') + self.commission_rate)
+            cash_required = quantity * limit_price + kalshi_order_fee(
+                int(quantity), limit_price, self.fee_multiplier
             )
             if cash_position is None or cash_position.quantity < cash_required:
                 logger.warning(
@@ -248,11 +249,15 @@ class KalshiTrader(Trader):
                 )
 
         # Risk check
-        if not await self.risk_manager.check_trade(ticker, side, quantity, limit_price):
+        risk_ok, risk_reason = await self.risk_manager.check_trade(
+            ticker, side, quantity, limit_price
+        )
+        if not risk_ok:
             await self._alert_rejected(OrderFailureReason.RISK_CHECK_FAILED, ticker)
             return PlaceOrderResult(
                 order=None,
                 failure_reason=OrderFailureReason.RISK_CHECK_FAILED,
+                failure_detail=risk_reason,
             )
 
         try:
@@ -263,7 +268,11 @@ class KalshiTrader(Trader):
             action = 'buy' if side == TradeSide.BUY else 'sell'
 
             # Determine Kalshi API side based on ticker
-            kalshi_side = 'no' if isinstance(ticker, KalshiTicker) and ticker.is_no_side else 'yes'
+            kalshi_side = (
+                'no'
+                if isinstance(ticker, KalshiTicker) and ticker.is_no_side
+                else 'yes'
+            )
 
             response = await self._submit_order(
                 action=action,

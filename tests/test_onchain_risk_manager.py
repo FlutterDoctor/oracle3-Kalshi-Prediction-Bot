@@ -41,10 +41,10 @@ class TestOnChainRiskManager:
         ticker = PolyMarketTicker(
             symbol='TEST', name='Test', token_id='a', market_id='b', event_id='c',
         )
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             ticker, TradeSide.BUY, Decimal('10'), Decimal('0.50')
         )
-        assert result is True
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_rejects_oversized_trade(self, setup):
@@ -58,10 +58,10 @@ class TestOnChainRiskManager:
         ticker = PolyMarketTicker(
             symbol='TEST', name='Test', token_id='a', market_id='b', event_id='c',
         )
-        result = await rm.check_trade(
+        ok, _reason = await rm.check_trade(
             ticker, TradeSide.BUY, Decimal('100'), Decimal('0.50')
         )
-        assert result is False
+        assert ok is False
 
     def test_get_risk_status(self, setup):
         pm, md = setup

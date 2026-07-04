@@ -16,7 +16,7 @@ from oracle3.position.position_manager import Position, PositionManager
 from oracle3.risk.risk_manager import NoRiskManager
 from oracle3.strategy.contrib.coint_spread_strategy import CointSpreadStrategy
 from oracle3.strategy.contrib.lead_lag_strategy import LeadLagStrategy
-from oracle3.ticker.ticker import CashTicker, PolyMarketTicker
+from oracle3.ticker.ticker import CashTicker, KalshiTicker, PolyMarketTicker
 from oracle3.trader.paper_trader import PaperTrader
 
 # ---------------------------------------------------------------------------
@@ -87,9 +87,7 @@ def _seed_order_book(
     trader.market_data.update_order_book(ticker, ob)
 
 
-def _price_event(
-    ticker: PolyMarketTicker, price: Decimal
-) -> PriceChangeEvent:
+def _price_event(ticker: PolyMarketTicker, price: Decimal) -> PriceChangeEvent:
     return PriceChangeEvent(ticker=ticker, price=price)
 
 
@@ -120,8 +118,11 @@ class TestCointSpreadDefaults:
 
     def test_custom_params(self):
         s = CointSpreadStrategy(
-            market_id_a='A', market_id_b='B',
-            hedge_ratio=0.8, entry_mult=3.0, exit_mult=1.0,
+            market_id_a='A',
+            market_id_b='B',
+            hedge_ratio=0.8,
+            entry_mult=3.0,
+            exit_mult=1.0,
             warmup=50,
         )
         assert s._id_a == 'A'
@@ -146,7 +147,8 @@ class TestCointSpreadWarmup:
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = CointSpreadStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
             warmup=50,
             cooldown_seconds=0.0,
         )
@@ -167,7 +169,8 @@ class TestCointSpreadWarmup:
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = CointSpreadStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
             warmup=10,
             hedge_ratio=1.0,
         )
@@ -206,8 +209,11 @@ class TestCointSpreadSignalGeneration:
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = CointSpreadStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            warmup=10, entry_mult=2.0, exit_mult=0.5,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            warmup=10,
+            entry_mult=2.0,
+            exit_mult=0.5,
             hedge_ratio=1.0,
         )
         trader = _make_trader([ticker_a, ticker_b])
@@ -222,25 +228,23 @@ class TestCointSpreadSignalGeneration:
         assert s._calibrated
 
         # Send event within band
-        await s.process_event(
-            _price_event(ticker_a, Decimal('0.500')), trader
-        )
-        await s.process_event(
-            _price_event(ticker_b, Decimal('0.500')), trader
-        )
+        await s.process_event(_price_event(ticker_a, Decimal('0.500')), trader)
+        await s.process_event(_price_event(ticker_b, Decimal('0.500')), trader)
         assert s._position_state == 'flat'
 
     async def test_entry_on_large_deviation(self):
         """When spread deviates well beyond entry threshold, enter."""
-        ticker_a = _make_ticker(
-            'A', market_id='mkt_a', no_token_id='A_NO'
-        )
+        ticker_a = _make_ticker('A', market_id='mkt_a', no_token_id='A_NO')
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = CointSpreadStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            warmup=10, entry_mult=2.0, exit_mult=0.5,
-            hedge_ratio=1.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            warmup=10,
+            entry_mult=2.0,
+            exit_mult=0.5,
+            hedge_ratio=1.0,
+            cooldown_seconds=0.0,
         )
         trader = _make_trader()
         _seed_order_book(trader, ticker_a, Decimal('0.45'), Decimal('0.55'))
@@ -259,12 +263,8 @@ class TestCointSpreadSignalGeneration:
 
         # Now create a large positive deviation (A much higher than B)
         # spread = 0.80 - 1.0*0.30 = 0.50 >> entry_threshold
-        await s.process_event(
-            _price_event(ticker_a, Decimal('0.80')), trader
-        )
-        await s.process_event(
-            _price_event(ticker_b, Decimal('0.30')), trader
-        )
+        await s.process_event(_price_event(ticker_a, Decimal('0.80')), trader)
+        await s.process_event(_price_event(ticker_b, Decimal('0.30')), trader)
         assert s._position_state == 'short_spread'
 
 
@@ -277,9 +277,13 @@ class TestCointSpreadPositionStateMachine:
         ticker_b = _make_ticker('B', market_id='mkt_b', no_token_id='B_NO')
         ticker_b_no = ticker_b.get_no_ticker()
         s = CointSpreadStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            warmup=10, entry_mult=2.0, exit_mult=0.5,
-            hedge_ratio=1.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            warmup=10,
+            entry_mult=2.0,
+            exit_mult=0.5,
+            hedge_ratio=1.0,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()
@@ -297,21 +301,13 @@ class TestCointSpreadPositionStateMachine:
             await s.process_event(_price_event(ticker_b, pb), trader)
 
         # Enter: large positive deviation -> short_spread
-        await s.process_event(
-            _price_event(ticker_a, Decimal('0.80')), trader
-        )
-        await s.process_event(
-            _price_event(ticker_b, Decimal('0.30')), trader
-        )
+        await s.process_event(_price_event(ticker_a, Decimal('0.80')), trader)
+        await s.process_event(_price_event(ticker_b, Decimal('0.30')), trader)
         assert s._position_state == 'short_spread'
 
         # Exit: spread converges back near mean
-        await s.process_event(
-            _price_event(ticker_a, Decimal('0.50')), trader
-        )
-        await s.process_event(
-            _price_event(ticker_b, Decimal('0.50')), trader
-        )
+        await s.process_event(_price_event(ticker_a, Decimal('0.50')), trader)
+        await s.process_event(_price_event(ticker_b, Decimal('0.50')), trader)
         assert s._position_state == 'flat'
 
 
@@ -396,23 +392,15 @@ class TestLeadLagWarmup:
 
         # Build warmup with stable prices
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         assert s.leader_observations == 10
 
         # Now send a leader event with a large move
         # leader_mean ~ 0.50, new price = 0.60, move = 0.10 > 0.01
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
 
         # Should have attempted entry or at least made a decision
         decisions = s.get_decisions()
@@ -424,9 +412,7 @@ class TestLeadLagSignalGeneration:
 
     async def test_leader_up_buys_follower(self):
         """When leader moves up, buy follower YES."""
-        leader = _make_ticker(
-            'LEADER', market_id='LEADER', no_token_id='LEADER_NO'
-        )
+        leader = _make_ticker('LEADER', market_id='LEADER', no_token_id='LEADER_NO')
         follower = _make_ticker(
             'FOLLOWER', market_id='FOLLOWER', no_token_id='FOLLOWER_NO'
         )
@@ -439,26 +425,16 @@ class TestLeadLagSignalGeneration:
             min_correlation=0.0,
         )
         trader = _make_trader()
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, leader, Decimal('0.45'), Decimal('0.55')
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, leader, Decimal('0.45'), Decimal('0.55'))
 
         # Warmup
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Leader moves up significantly
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
 
         assert s._position_state == 'long_follower'
         decisions = s.get_decisions()
@@ -481,29 +457,17 @@ class TestLeadLagSignalGeneration:
             min_correlation=0.0,
         )
         trader = _make_trader()
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, follower_no, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, leader, Decimal('0.45'), Decimal('0.55')
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, follower_no, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, leader, Decimal('0.45'), Decimal('0.55'))
 
         # Warmup
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Leader moves down
-        await s.process_event(
-            _price_event(leader, Decimal('0.40')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.40')), trader)
 
         assert s._position_state == 'short_follower'
 
@@ -521,17 +485,11 @@ class TestLeadLagSignalGeneration:
         trader = _make_trader([leader, follower])
 
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Small move: 0.52 - 0.50 = 0.02 < 0.05
-        await s.process_event(
-            _price_event(leader, Decimal('0.52')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.52')), trader)
         assert s._position_state == 'flat'
 
 
@@ -540,9 +498,7 @@ class TestLeadLagPositionStateMachine:
 
     async def test_catchup_exit(self):
         """Exit when follower catches up to the leader's move."""
-        leader = _make_ticker(
-            'LEADER', market_id='LEADER', no_token_id='LEADER_NO'
-        )
+        leader = _make_ticker('LEADER', market_id='LEADER', no_token_id='LEADER_NO')
         follower = _make_ticker(
             'FOLLOWER', market_id='FOLLOWER', no_token_id='FOLLOWER_NO'
         )
@@ -558,39 +514,25 @@ class TestLeadLagPositionStateMachine:
             trade_size=5.0,
         )
         trader = _make_trader()
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, leader, Decimal('0.45'), Decimal('0.55')
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, leader, Decimal('0.45'), Decimal('0.55'))
 
         # Warmup
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Enter: leader up 0.10
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
         assert s._position_state == 'long_follower'
 
         # Follower catches up: move 0.05, catchup_ratio = 0.05/0.10 = 0.50 >= 0.5
-        await s.process_event(
-            _price_event(follower, Decimal('0.55')), trader
-        )
+        await s.process_event(_price_event(follower, Decimal('0.55')), trader)
         assert s._position_state == 'flat'
 
     async def test_timeout_exit(self):
         """Exit when max_hold exceeded."""
-        leader = _make_ticker(
-            'LEADER', market_id='LEADER', no_token_id='LEADER_NO'
-        )
+        leader = _make_ticker('LEADER', market_id='LEADER', no_token_id='LEADER_NO')
         follower = _make_ticker(
             'FOLLOWER', market_id='FOLLOWER', no_token_id='FOLLOWER_NO'
         )
@@ -606,33 +548,21 @@ class TestLeadLagPositionStateMachine:
             trade_size=5.0,
         )
         trader = _make_trader()
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, leader, Decimal('0.45'), Decimal('0.55')
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, leader, Decimal('0.45'), Decimal('0.55'))
 
         # Warmup
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Enter
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
         assert s._position_state == 'long_follower'
 
         # Send max_hold follower updates without catching up
         for _i in range(6):
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         assert s._position_state == 'flat'
 
@@ -680,8 +610,13 @@ class TestLeadLagFeeAware:
         assert s._net_edge(0.005) == pytest.approx(-0.005, abs=1e-6)
 
     async def test_no_entry_when_edge_below_fees(self):
+        # Follower is a Kalshi ticker so the real (nonzero) fee schedule
+        # applies -- Polymarket's real fee is ~0, so a small edge would
+        # correctly no longer be blocked there.
         leader = _make_ticker('LEADER', market_id='LEADER')
-        follower = _make_ticker('FOLLOWER', market_id='FOLLOWER')
+        follower = KalshiTicker(
+            symbol='FOLLOWER', name='FOLLOWER', market_ticker='FOLLOWER'
+        )
         s = LeadLagStrategy(
             leader_symbol='LEADER',
             follower_symbol='FOLLOWER',
@@ -691,19 +626,22 @@ class TestLeadLagFeeAware:
             min_correlation=0.0,
         )
         trader = _make_trader([leader, follower])
+        trader.position_manager.update_position(
+            Position(
+                ticker=CashTicker.KALSHI_USD,
+                quantity=Decimal('10000'),
+                average_cost=Decimal('1'),
+                realized_pnl=Decimal('0'),
+            )
+        )
 
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
-        # Move = 0.008, net_edge = 0.008 - 0.01 = -0.002 < 0
-        await s.process_event(
-            _price_event(leader, Decimal('0.508')), trader
-        )
+        # Move = 0.008; Kalshi round-trip fee at price=0.50 is
+        # 2*0.07*0.5*0.5 = 0.035, so net_edge = 0.008 - 0.035 < 0
+        await s.process_event(_price_event(leader, Decimal('0.508')), trader)
         assert s._position_state == 'flat'
 
 
@@ -727,9 +665,7 @@ class TestLeadLagNonPriceEvents:
             follower_symbol='FOLLOWER',
         )
         trader = _make_trader([no_ticker])
-        await s.process_event(
-            _price_event(no_ticker, Decimal('0.50')), trader
-        )
+        await s.process_event(_price_event(no_ticker, Decimal('0.50')), trader)
         assert s._leader_price is None
 
 
@@ -737,9 +673,7 @@ class TestLeadLagCooldown:
     """Test cooldown enforcement."""
 
     async def test_cooldown_prevents_rapid_reentry(self):
-        leader = _make_ticker(
-            'LEADER', market_id='LEADER', no_token_id='LEADER_NO'
-        )
+        leader = _make_ticker('LEADER', market_id='LEADER', no_token_id='LEADER_NO')
         follower = _make_ticker(
             'FOLLOWER', market_id='FOLLOWER', no_token_id='FOLLOWER_NO'
         )
@@ -755,37 +689,23 @@ class TestLeadLagCooldown:
             trade_size=5.0,
         )
         trader = _make_trader()
-        _seed_order_book(
-            trader, follower, Decimal('0.45'), Decimal('0.55')
-        )
-        _seed_order_book(
-            trader, leader, Decimal('0.45'), Decimal('0.55')
-        )
+        _seed_order_book(trader, follower, Decimal('0.45'), Decimal('0.55'))
+        _seed_order_book(trader, leader, Decimal('0.45'), Decimal('0.55'))
 
         # Warmup
         for _i in range(10):
-            await s.process_event(
-                _price_event(leader, Decimal('0.50')), trader
-            )
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(leader, Decimal('0.50')), trader)
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
 
         # Enter
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
         assert s._position_state == 'long_follower'
 
         # Force exit via timeout
         for _i in range(3):
-            await s.process_event(
-                _price_event(follower, Decimal('0.50')), trader
-            )
+            await s.process_event(_price_event(follower, Decimal('0.50')), trader)
         assert s._position_state == 'flat'
 
         # Try to re-enter -- should be blocked by cooldown
-        await s.process_event(
-            _price_event(leader, Decimal('0.60')), trader
-        )
+        await s.process_event(_price_event(leader, Decimal('0.60')), trader)
         assert s._position_state == 'flat'

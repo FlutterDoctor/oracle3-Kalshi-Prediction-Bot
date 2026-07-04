@@ -24,15 +24,13 @@ import time
 from decimal import Decimal
 
 from oracle3.events.events import Event, PriceChangeEvent
+from oracle3.pricing.fees import kalshi_round_trip_fee
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative per-side fee estimate (0.5%)
-_FEE_PER_SIDE = Decimal('0.005')
 
 
 class StructuralArbStrategy(QuantStrategy):
@@ -63,7 +61,9 @@ class StructuralArbStrategy(QuantStrategy):
     cooldown_seconds:
         Minimum seconds between successive entry attempts.
     fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate). Fee is nonlinear in price -- computed per-leg
+        from the real formula rather than a flat rate.
     """
 
     name = 'structural_arb'
@@ -80,7 +80,7 @@ class StructuralArbStrategy(QuantStrategy):
         min_edge: float = 0.02,
         exit_fraction: float = 0.5,
         cooldown_seconds: float = 120.0,
-        fee_rate: float = 0.005,
+        fee_rate: float = 0.07,
     ) -> None:
         super().__init__()
         self._id_a = market_id_a
@@ -118,10 +118,9 @@ class StructuralArbStrategy(QuantStrategy):
         self, trader: Trader, market_id: str, *, yes: bool = True
     ) -> Ticker | None:
         for ticker in trader.market_data.order_books:
-            is_no = (
-                ticker.symbol.endswith('_NO')
-                or (getattr(ticker, 'name', '') or '').startswith('NO ')
-            )
+            is_no = ticker.symbol.endswith('_NO') or (
+                getattr(ticker, 'name', '') or ''
+            ).startswith('NO ')
             if yes and is_no:
                 continue
             if not yes and not is_no:
@@ -165,15 +164,24 @@ class StructuralArbStrategy(QuantStrategy):
         pb = float(self._price_b)
         expected = self._expected_a(pb)
         residual = pa - expected  # positive = A overpriced
+        fee_multiplier = float(self.fee_rate)
+        # A overpriced -> sell A (NO leg at 1-pa), buy B (YES leg at pb)
+        fee_short_a = kalshi_round_trip_fee(
+            1 - pa, fee_multiplier
+        ) + kalshi_round_trip_fee(pb, fee_multiplier)
+        # A underpriced -> buy A (YES leg at pa), sell B (NO leg at 1-pb)
+        fee_long_a = kalshi_round_trip_fee(pa, fee_multiplier) + kalshi_round_trip_fee(
+            1 - pb, fee_multiplier
+        )
 
         if self._position_state == 'flat':
-            if residual > float(self.min_edge):
+            if residual > float(self.min_edge) + fee_short_a:
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
                     return
                 self._last_entry_time = now
                 await self._enter_short_a(trader, pa, expected, residual)
-            elif residual < -float(self.min_edge):
+            elif residual < -float(self.min_edge) - fee_long_a:
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
                     return
@@ -190,8 +198,10 @@ class StructuralArbStrategy(QuantStrategy):
                         f'within +/-{float(self.min_edge):.4f}'
                     ),
                     signal_values={
-                        'price_a': pa, 'price_b': pb,
-                        'expected': expected, 'residual': residual,
+                        'price_a': pa,
+                        'price_b': pb,
+                        'expected': expected,
+                        'residual': residual,
                     },
                 )
         else:
@@ -201,7 +211,11 @@ class StructuralArbStrategy(QuantStrategy):
                 await self._exit(trader, residual)
 
     async def _enter_short_a(
-        self, trader: Trader, pa: float, expected: float, residual: float,
+        self,
+        trader: Trader,
+        pa: float,
+        expected: float,
+        residual: float,
     ) -> None:
         """A overpriced -> sell A (buy NO), buy B (buy YES)."""
         ticker_a_no = self._find_ticker(trader, self._id_a, yes=False)
@@ -212,7 +226,8 @@ class StructuralArbStrategy(QuantStrategy):
         if ticker_a_no and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a_no,
                     limit_price=Decimal('1') - self._price_a,
                     quantity=self.trade_size,
                 )
@@ -228,8 +243,10 @@ class StructuralArbStrategy(QuantStrategy):
         if ticker_b and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b,
-                    limit_price=self._price_b, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b,
+                    limit_price=self._price_b,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -251,17 +268,21 @@ class StructuralArbStrategy(QuantStrategy):
                 f'residual={residual:.4f}  legs={executed_legs}/2'
             ),
             signal_values={
-                'price_a': pa, 'price_b': float(self._price_b or 0),
-                'expected': expected, 'residual': residual,
+                'price_a': pa,
+                'price_b': float(self._price_b or 0),
+                'expected': expected,
+                'residual': residual,
                 'executed_legs': executed_legs,
             },
         )
-        logger.info(
-            'ENTER structural arb: A overpriced, residual=%.4f', residual
-        )
+        logger.info('ENTER structural arb: A overpriced, residual=%.4f', residual)
 
     async def _enter_long_a(
-        self, trader: Trader, pa: float, expected: float, residual: float,
+        self,
+        trader: Trader,
+        pa: float,
+        expected: float,
+        residual: float,
     ) -> None:
         """A underpriced -> buy A (buy YES), sell B (buy NO)."""
         ticker_a = self._find_ticker(trader, self._id_a, yes=True)
@@ -272,8 +293,10 @@ class StructuralArbStrategy(QuantStrategy):
         if ticker_a and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a,
-                    limit_price=self._price_a, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a,
+                    limit_price=self._price_a,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -287,7 +310,8 @@ class StructuralArbStrategy(QuantStrategy):
         if ticker_b_no and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b_no,
                     limit_price=Decimal('1') - self._price_b,
                     quantity=self.trade_size,
                 )
@@ -311,14 +335,14 @@ class StructuralArbStrategy(QuantStrategy):
                 f'residual={residual:.4f}  legs={executed_legs}/2'
             ),
             signal_values={
-                'price_a': pa, 'price_b': float(self._price_b or 0),
-                'expected': expected, 'residual': residual,
+                'price_a': pa,
+                'price_b': float(self._price_b or 0),
+                'expected': expected,
+                'residual': residual,
                 'executed_legs': executed_legs,
             },
         )
-        logger.info(
-            'ENTER structural arb: A underpriced, residual=%.4f', residual
-        )
+        logger.info('ENTER structural arb: A underpriced, residual=%.4f', residual)
 
     async def _exit(self, trader: Trader, residual: float) -> None:
         """Close all positions -- residual has converged."""
@@ -329,8 +353,10 @@ class StructuralArbStrategy(QuantStrategy):
                 if best_bid:
                     try:
                         result = await trader.place_order(
-                            side=TradeSide.SELL, ticker=pos.ticker,
-                            limit_price=best_bid.price, quantity=pos.quantity,
+                            side=TradeSide.SELL,
+                            ticker=pos.ticker,
+                            limit_price=best_bid.price,
+                            quantity=pos.quantity,
                         )
                         if not result.failure_reason:
                             executed_legs += 1

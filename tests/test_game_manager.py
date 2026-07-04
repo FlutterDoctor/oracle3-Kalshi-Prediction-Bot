@@ -14,6 +14,7 @@ from oracle3.dashboard.game_manager import (
     GameSession,
     SharedMarketFeed,
 )
+from oracle3.events.events import PriceChangeEvent
 from oracle3.order.order_book import Level, OrderBook
 
 
@@ -109,6 +110,90 @@ async def test_kalshi_without_keys_reports_needs_keys(
     )
     session = await manager.add_game('Lakers vs Celtics', 'kalshi', [market])
     assert session.status == 'needs_keys'
+
+
+def test_market_prices_include_history_side_and_freshness() -> None:
+    session = _make_session()
+    ticker = session._ticker_for('m1', is_no=False)
+    session.market_data.process_price_change_event(
+        PriceChangeEvent(ticker=ticker, price=Decimal('0.52'))
+    )
+
+    rows = session._market_prices()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['side'] == 'yes'
+    assert row['history'] == ['0.520']
+    assert row['updated_ago_s'] is not None
+    assert row['updated_ago_s'] >= 0
+
+
+def test_snapshot_decisions_carry_signal_values_and_status_metrics() -> None:
+    session = _make_session()
+    _seed_book(session)
+    ticker = session._ticker_for('m1', is_no=False)
+    session.strategy.record_decision(
+        ticker_name=ticker.symbol,
+        action='HOLD',
+        executed=False,
+        confidence=0.4,
+        reasoning='net edge 0.001 < min 0.008',
+        signal_values={'risk_premium': 0.02, 'lambda': 0.19},
+    )
+
+    snap = session.snapshot()
+    assert snap['decisions'][-1]['signal_values'] == {
+        'risk_premium': 0.02, 'lambda': 0.19,
+    }
+    assert 'metrics' in snap['bot_status']
+    assert snap['bot_status']['metrics']['risk_premium'] == 0.02
+    # Strategy-level calibrator metrics (lambda_hat/confidence/etc) are also
+    # merged in, on top of the decision's own signal_values.
+    assert 'lambda_hat' in snap['bot_status']['metrics']
+
+
+def test_feed_status_unavailable_without_source() -> None:
+    feed = SharedMarketFeed()
+    assert feed.feed_status('polymarket') == {'connection_state': 'unavailable'}
+
+
+def test_watch_routes_to_ws_source_only() -> None:
+    feed = SharedMarketFeed()
+
+    class FakeWs:
+        def __init__(self):
+            self.watched: list[tuple[str, dict]] = []
+
+        def watch_token(self, token_id: str, **kwargs) -> None:
+            self.watched.append((token_id, kwargs))
+
+    class FakeRest:
+        def watch_token(self, token_id: str, **kwargs) -> None:
+            raise AssertionError('rest source should never be watched')
+
+    ws = FakeWs()
+    feed._sources['polymarket:ws'] = ws
+    feed._sources['polymarket:rest'] = FakeRest()
+
+    feed.watch('polymarket', 'tok1', name='Team A', market_id='m1')
+    assert ws.watched == [('tok1', {'name': 'Team A', 'market_id': 'm1'})]
+
+
+def test_feed_status_reports_connection_state() -> None:
+    feed = SharedMarketFeed()
+
+    class FakeWs:
+        connection_state = 'connected'
+        last_message_at = None
+        next_reconnect_at = None
+        reconnect_attempt = 0
+        last_error = ''
+
+    feed._sources['kalshi:ws'] = FakeWs()
+    status = feed.feed_status('kalshi')
+    assert status['connection_state'] == 'connected'
+    assert status['seconds_since_last_message'] is None
+    assert status['reconnect_in_seconds'] is None
 
 
 @pytest.mark.asyncio

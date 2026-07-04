@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -49,20 +50,47 @@ def _cash_ticker_for(exchange: str) -> CashTicker:
     return CashTicker.POLYMARKET_USDC
 
 
-def _derive_bot_status(decisions: list[Any], engine_status: str) -> dict[str, str]:
+def _status_metrics(
+    decisions: list[Any], strategy_metrics: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Live numbers behind the status label: calibrator state plus whatever
+    the latest decision's own signal_values carried (edge, lambda, ...)."""
+    metrics: dict[str, Any] = dict(strategy_metrics or {})
+    if decisions:
+        metrics.update(decisions[-1].signal_values or {})
+    return metrics
+
+
+def _derive_bot_status(
+    decisions: list[Any],
+    engine_status: str,
+    strategy_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Turn the strategy's most recent decision into a human-readable status.
 
     The strategy now records a HOLD decision (with reasoning) on every
     processed tick it doesn't trade on, so the latest decision doubles as a
     liveness signal — if it's recent, the bot is actively evaluating.
+
+    ``metrics`` carries the live numbers behind the label (edge, lambda,
+    confidence, calibration staleness) so the dashboard never has to just
+    say "Evaluating" without the number that justifies it.
     """
+    metrics = _status_metrics(decisions, strategy_metrics)
+
     if engine_status in ('bot_paused', 'halted', 'needs_keys', 'resolved', 'starting'):
-        return {'label': engine_status.replace('_', ' ').title(), 'detail': '', 'as_of': ''}
+        return {
+            'label': engine_status.replace('_', ' ').title(),
+            'detail': '',
+            'as_of': '',
+            'metrics': metrics,
+        }
     if not decisions:
         return {
             'label': 'Waiting for first price update',
             'detail': 'No market data received for this game yet.',
             'as_of': '',
+            'metrics': metrics,
         }
     last = decisions[-1]
     action = last.action
@@ -83,7 +111,12 @@ def _derive_bot_status(decisions: list[Any], engine_status: str) -> dict[str, st
         label = 'Skipping — volume too high'
     else:
         label = 'Evaluating'
-    return {'label': label, 'detail': reason, 'as_of': last.timestamp}
+    return {
+        'label': label,
+        'detail': reason,
+        'as_of': last.timestamp,
+        'metrics': metrics,
+    }
 
 
 @dataclass
@@ -122,50 +155,73 @@ class GameFeedView(DataSource):
 
 
 class SharedMarketFeed:
-    """Owns one upstream live source per exchange and tees events to games."""
+    """Owns upstream live sources per exchange and tees events to games.
+
+    Each exchange gets two upstream sources: a websocket source (``ws``) that
+    owns live pricing, and a REST source (``rest``) running in
+    ``discovery_only`` mode that only finds new markets/events and emits
+    their news — it doesn't fetch or diff order books, so the two sources
+    never fight over top-of-book state. Both tee into the same per-game
+    subscriber queues.
+    """
 
     def __init__(self) -> None:
         self._sources: dict[str, DataSource] = {}
         self._subscribers: list[tuple[set[str], GameFeedView]] = []
         self._tee_tasks: dict[str, asyncio.Task[None]] = {}
 
-    def _build_source(self, exchange: str) -> DataSource | None:
+    def _build_sources(self, exchange: str) -> dict[str, DataSource] | None:
         if exchange == 'polymarket':
             from oracle3.data.live.live_data_source import LivePolyMarketDataSource
-
-            return LivePolyMarketDataSource(
-                event_cache_file='events_cache.jsonl',
-                polling_interval=60.0,
-                orderbook_refresh_interval=10.0,
-                reprocess_on_start=False,
+            from oracle3.data.live.polymarket_ws_data_source import (
+                PolymarketWebSocketDataSource,
             )
+
+            return {
+                'ws': PolymarketWebSocketDataSource(),
+                'rest': LivePolyMarketDataSource(
+                    event_cache_file='events_cache.jsonl',
+                    polling_interval=120.0,
+                    reprocess_on_start=False,
+                    discovery_only=True,
+                ),
+            }
         if exchange == 'kalshi':
             if not _kalshi_keys_present():
                 return None
             from oracle3.data.live.kalshi_data_source import LiveKalshiDataSource
-
-            return LiveKalshiDataSource(
-                event_cache_file='kalshi_events_cache.jsonl',
-                polling_interval=60.0,
-                reprocess_on_start=False,
+            from oracle3.data.live.kalshi_ws_data_source import (
+                KalshiWebSocketDataSource,
             )
+
+            return {
+                'ws': KalshiWebSocketDataSource(),
+                'rest': LiveKalshiDataSource(
+                    event_cache_file='kalshi_events_cache.jsonl',
+                    polling_interval=120.0,
+                    reprocess_on_start=False,
+                    discovery_only=True,
+                ),
+            }
         return None
 
     async def ensure_running(self, exchange: str) -> bool:
-        """Start the upstream source + tee loop for ``exchange`` if needed.
+        """Start the upstream sources + tee loops for ``exchange`` if needed.
 
         Returns ``True`` if a live feed is available, ``False`` otherwise
         (e.g. Kalshi without API keys).
         """
-        if exchange in self._tee_tasks:
+        if f'{exchange}:ws' in self._tee_tasks:
             return True
-        src = self._sources.get(exchange) or self._build_source(exchange)
-        if src is None:
+        sources = self._build_sources(exchange)
+        if sources is None:
             return False
-        self._sources[exchange] = src
-        await src.start()
-        self._tee_tasks[exchange] = asyncio.create_task(self._tee_loop(exchange, src))
-        logger.info('SharedMarketFeed started upstream source for %s', exchange)
+        for kind, src in sources.items():
+            key = f'{exchange}:{kind}'
+            self._sources[key] = src
+            await src.start()
+            self._tee_tasks[key] = asyncio.create_task(self._tee_loop(key, src))
+        logger.info('SharedMarketFeed started upstream sources for %s', exchange)
         return True
 
     def subscribe(self, tokens: set[str]) -> GameFeedView:
@@ -176,20 +232,45 @@ class SharedMarketFeed:
     def unsubscribe(self, view: GameFeedView) -> None:
         self._subscribers = [(t, v) for (t, v) in self._subscribers if v is not view]
 
-    def watch(self, exchange: str, token_id: str) -> None:
-        src = self._sources.get(exchange)
+    def watch(self, exchange: str, token_id: str, name: str = '', **meta: str) -> None:
+        src = self._sources.get(f'{exchange}:ws')
         watch_token = getattr(src, 'watch_token', None)
         if callable(watch_token) and token_id:
-            watch_token(token_id)
+            watch_token(token_id, name=name, **meta)
 
-    async def _tee_loop(self, exchange: str, src: DataSource) -> None:
+    def feed_status(self, exchange: str) -> dict[str, Any]:
+        """Live connection state for ``exchange``'s websocket source.
+
+        Used by the dashboard to show whether a feed is connected, how
+        stale the last message is, and (during an outage) a real countdown
+        to the next reconnect attempt.
+        """
+        src = self._sources.get(f'{exchange}:ws')
+        if src is None:
+            return {'connection_state': 'unavailable'}
+        now = time.monotonic()
+        last_message_at = getattr(src, 'last_message_at', None)
+        next_reconnect_at = getattr(src, 'next_reconnect_at', None)
+        return {
+            'connection_state': getattr(src, 'connection_state', 'unknown'),
+            'seconds_since_last_message': (
+                now - last_message_at if last_message_at is not None else None
+            ),
+            'reconnect_in_seconds': (
+                max(0.0, next_reconnect_at - now) if next_reconnect_at is not None else None
+            ),
+            'reconnect_attempt': getattr(src, 'reconnect_attempt', 0),
+            'last_error': getattr(src, 'last_error', ''),
+        }
+
+    async def _tee_loop(self, key: str, src: DataSource) -> None:
         while True:
             try:
                 event = await src.get_next_event()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.debug('shared feed poll error (%s)', exchange, exc_info=True)
+                logger.debug('shared feed poll error (%s)', key, exc_info=True)
                 await asyncio.sleep(1.0)
                 continue
             if event is None:
@@ -244,8 +325,11 @@ class GameSession:
 
         self.market_data = MarketDataManager(
             spread=Decimal('0.01'),
-            max_history_per_ticker=None,
-            max_timeline_events=None,
+            # Bounded, not unlimited: websocket feeds tick far more often
+            # than the old 60s REST poll, so unbounded history would grow
+            # without limit over a multi-hour game.
+            max_history_per_ticker=2000,
+            max_timeline_events=20000,
         )
         self.position_manager = PositionManager()
         self.position_manager.update_position(
@@ -293,11 +377,38 @@ class GameSession:
             logger.info('Game %s has no live feed (needs API keys)', self.title)
             return
         for m in self.markets:
-            self.feed.watch(self.exchange, m.token_id)
-            if m.no_token_id:
-                self.feed.watch(self.exchange, m.no_token_id)
+            self._watch_market(m)
         self._task = asyncio.create_task(self.engine.start())
         self.status = 'running'
+
+    def _watch_market(self, m: GameMarket) -> None:
+        """Subscribe both sides of a market on the live websocket source."""
+        if self.exchange == 'kalshi':
+            self.feed.watch(
+                self.exchange, m.token_id, name=m.name, event_ticker=m.event_id
+            )
+            if m.no_token_id:
+                self.feed.watch(
+                    self.exchange, m.no_token_id, name=m.name, event_ticker=m.event_id
+                )
+            return
+        self.feed.watch(
+            self.exchange,
+            m.token_id,
+            name=m.name,
+            market_id=m.market_id,
+            event_id=m.event_id,
+            no_token_id=m.no_token_id,
+        )
+        if m.no_token_id:
+            self.feed.watch(
+                self.exchange,
+                m.no_token_id,
+                name=m.name,
+                market_id=m.market_id,
+                event_id=m.event_id,
+                no_token_id=m.token_id,
+            )
 
     def pause_bot(self) -> None:
         """Stop the bot from acting on this game; manual orders still work."""
@@ -348,7 +459,9 @@ class GameSession:
             trade_side, ticker, Decimal(str(price)), Decimal(str(quantity))
         )
         if result.order is None:
-            reason = result.failure_reason.value if result.failure_reason else 'unknown'
+            reason = result.failure_detail or (
+                result.failure_reason.value if result.failure_reason else 'unknown'
+            )
             return {'ok': False, 'error': reason}
         return {
             'ok': True,
@@ -362,21 +475,32 @@ class GameSession:
     def set_strategy_config(self, **kwargs: Any) -> None:
         self.strategy.set_thresholds(**kwargs)
 
+    def _side_for_symbol(self, symbol: str) -> str:
+        """'no' if ``symbol`` is any market's NO-side symbol, else 'yes'."""
+        no_symbols = {m.no_token_id for m in self.markets if m.no_token_id}
+        return 'no' if symbol in no_symbols else 'yes'
+
     def _market_prices(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for m in self.markets:
             ticker = self._ticker_for(m.market_id, is_no=False)
             bid = self.market_data.get_best_bid(ticker)
             ask = self.market_data.get_best_ask(ticker)
-            last_prices = self.market_data.get_price_history(ticker, limit=1)
-            last = last_prices[-1] if last_prices else None
+            history = self.market_data.get_price_history(ticker, limit=90)
+            last = history[-1] if history else None
+            last_seen = self.market_data.get_last_seen(ticker)
             rows.append(
                 {
                     'market_id': m.market_id,
                     'name': m.name,
+                    'side': 'yes',
                     'bid': str(bid.price) if bid is not None else None,
                     'ask': str(ask.price) if ask is not None else None,
                     'last': str(last) if last is not None else None,
+                    'history': [str(p) for p in history],
+                    'updated_ago_s': (
+                        time.monotonic() - last_seen if last_seen is not None else None
+                    ),
                 }
             )
         return rows
@@ -392,14 +516,21 @@ class GameSession:
                 'confidence': d.confidence,
                 'reasoning': d.reasoning,
                 'ticker_name': d.ticker_name,
+                'signal_values': d.signal_values,
             }
             for d in self.strategy.get_decisions()[-30:]
         ]
-        bot_status = _derive_bot_status(self.strategy.get_decisions(), self.status)
+        strategy_metrics: dict[str, Any] = getattr(
+            self.strategy, 'get_status_metrics', lambda: {}
+        )()
+        bot_status = _derive_bot_status(
+            self.strategy.get_decisions(), self.status, strategy_metrics
+        )
         positions = [
             {
                 'symbol': p.ticker_symbol,
                 'name': p.ticker_name,
+                'side': self._side_for_symbol(p.ticker_symbol),
                 'qty': str(p.quantity),
                 'avg_cost': str(p.average_cost),
                 'current_price': str(p.current_price),
@@ -554,6 +685,7 @@ class GameManager:
         total_alloc = sum((Decimal(g['allocation']) for g in games), Decimal('0'))
         total_equity = sum((Decimal(g['equity']) for g in games), Decimal('0'))
         total_pnl = sum((Decimal(g['total_pnl']) for g in games), Decimal('0'))
+        exchanges = {s.exchange for s in self.games.values()}
         return {
             'read_only': self._read_only,
             'summary': {
@@ -565,6 +697,7 @@ class GameManager:
                     float(total_pnl / total_alloc * 100) if total_alloc > 0 else 0.0
                 ),
             },
+            'feeds': {ex: self.feed.feed_status(ex) for ex in exchanges},
             'games': games,
         }
 

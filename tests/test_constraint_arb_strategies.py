@@ -101,9 +101,7 @@ def _seed_order_book(
     trader.market_data.update_order_book(ticker, ob)
 
 
-def _price_event(
-    ticker: PolyMarketTicker, price: Decimal
-) -> PriceChangeEvent:
+def _price_event(ticker: PolyMarketTicker, price: Decimal) -> PriceChangeEvent:
     return PriceChangeEvent(ticker=ticker, price=price)
 
 
@@ -122,7 +120,7 @@ class TestExclusivityArbDefaults:
         assert s.trade_size == Decimal('10')
         assert s.min_edge == Decimal('0.02')
         assert s.cooldown_seconds == 120.0
-        assert s.fee_rate == Decimal('0.005')
+        assert s.fee_rate == Decimal('0.07')
         assert s._position_state == 'flat'
         assert s._price_a is None
         assert s._price_b is None
@@ -214,13 +212,9 @@ class TestExclusivityArbViolation:
 
     async def test_violation_detected_when_sum_exceeds_one(self):
         """A + B > 1 by more than min_edge => ENTER_ARB."""
-        ticker_a = _make_ticker(
-            'A', market_id='mkt_a', no_token_id='A_NO'
-        )
+        ticker_a = _make_ticker('A', market_id='mkt_a', no_token_id='A_NO')
         ticker_a_no = ticker_a.get_no_ticker()
-        ticker_b = _make_ticker(
-            'B', market_id='mkt_b', no_token_id='B_NO'
-        )
+        ticker_b = _make_ticker('B', market_id='mkt_b', no_token_id='B_NO')
         ticker_b_no = ticker_b.get_no_ticker()
         s = ExclusivityArbStrategy(
             market_id_a='mkt_a',
@@ -394,8 +388,10 @@ class TestImplicationArbViolation:
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ImplicationArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            min_edge=0.01, fee_rate=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            min_edge=0.01,
+            fee_rate=0.0,
         )
         trader = _make_trader([ticker_a, ticker_b])
         await s.process_event(_price_event(ticker_a, Decimal('0.30')), trader)
@@ -407,8 +403,11 @@ class TestImplicationArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ImplicationArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
         )
         trader = _make_trader()
         _seed_order_book(trader, ticker_a, Decimal('0.55'), Decimal('0.65'))
@@ -425,8 +424,11 @@ class TestImplicationArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ImplicationArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()
@@ -483,14 +485,16 @@ class TestConditionalArbBounds:
 
 
 class TestConditionalArbViolation:
-
     async def test_a_within_band_holds(self):
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ConditionalArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            cond_lower=0.4, cond_upper=0.9,
-            min_edge=0.01, fee_rate=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            cond_lower=0.4,
+            cond_upper=0.9,
+            min_edge=0.01,
+            fee_rate=0.0,
         )
         trader = _make_trader([ticker_a, ticker_b])
 
@@ -504,9 +508,13 @@ class TestConditionalArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ConditionalArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            cond_lower=0.4, cond_upper=0.6,
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            cond_lower=0.4,
+            cond_upper=0.6,
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
         )
         trader = _make_trader()
         _seed_order_book(trader, ticker_a, Decimal('0.55'), Decimal('0.65'))
@@ -523,9 +531,13 @@ class TestConditionalArbViolation:
         ticker_b = _make_ticker('B', market_id='mkt_b', no_token_id='B_NO')
         ticker_b_no = ticker_b.get_no_ticker()
         s = ConditionalArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            cond_lower=0.5, cond_upper=0.9,
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            cond_lower=0.5,
+            cond_upper=0.9,
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
         )
         trader = _make_trader()
         _seed_order_book(trader, ticker_a, Decimal('0.04'), Decimal('0.06'))
@@ -542,9 +554,13 @@ class TestConditionalArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ConditionalArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            cond_lower=0.4, cond_upper=0.6,
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            cond_lower=0.4,
+            cond_upper=0.6,
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()
@@ -581,12 +597,18 @@ class TestEventSumArbDefaults:
 class TestEventSumArbRegistration:
     async def test_registers_tickers_by_event_id(self):
         t1 = PolyMarketTicker(
-            symbol='T1', name='Outcome 1', token_id='t1',
-            market_id='m1', event_id='evt_abc',
+            symbol='T1',
+            name='Outcome 1',
+            token_id='t1',
+            market_id='m1',
+            event_id='evt_abc',
         )
         t2 = PolyMarketTicker(
-            symbol='T2', name='Outcome 2', token_id='t2',
-            market_id='m2', event_id='evt_abc',
+            symbol='T2',
+            name='Outcome 2',
+            token_id='t2',
+            market_id='m2',
+            event_id='evt_abc',
         )
         s = EventSumArbStrategy(event_id='evt_abc')
         trader = _make_trader([t1, t2])
@@ -599,8 +621,11 @@ class TestEventSumArbRegistration:
 
     async def test_ignores_wrong_event_id(self):
         t = PolyMarketTicker(
-            symbol='T', name='X', token_id='t',
-            market_id='m', event_id='evt_other',
+            symbol='T',
+            name='X',
+            token_id='t',
+            market_id='m',
+            event_id='evt_other',
         )
         s = EventSumArbStrategy(event_id='evt_abc')
         trader = _make_trader([t])
@@ -612,16 +637,27 @@ class TestEventSumArbDetection:
     async def test_overpriced_sum_triggers_buy_no(self):
         """sum_yes > 1 + fees + min_edge => BUY_NO."""
         t1 = PolyMarketTicker(
-            symbol='T1', name='O1', token_id='t1',
-            market_id='m1', event_id='evt1', no_token_id='T1_NO',
+            symbol='T1',
+            name='O1',
+            token_id='t1',
+            market_id='m1',
+            event_id='evt1',
+            no_token_id='T1_NO',
         )
         t2 = PolyMarketTicker(
-            symbol='T2', name='O2', token_id='t2',
-            market_id='m2', event_id='evt1', no_token_id='T2_NO',
+            symbol='T2',
+            name='O2',
+            token_id='t2',
+            market_id='m2',
+            event_id='evt1',
+            no_token_id='T2_NO',
         )
         s = EventSumArbStrategy(
-            event_id='evt1', min_edge=0.01, fee_rate=0.0,
-            cooldown_seconds=0.0, trade_size=5.0,
+            event_id='evt1',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
+            trade_size=5.0,
         )
         trader = _make_trader()
 
@@ -643,16 +679,25 @@ class TestEventSumArbDetection:
     async def test_underpriced_sum_holds_or_buys_yes(self):
         """sum_yes < 1 by enough => BUY_YES (or hold if edge too small)."""
         t1 = PolyMarketTicker(
-            symbol='T1', name='O1', token_id='t1',
-            market_id='m1', event_id='evt1',
+            symbol='T1',
+            name='O1',
+            token_id='t1',
+            market_id='m1',
+            event_id='evt1',
         )
         t2 = PolyMarketTicker(
-            symbol='T2', name='O2', token_id='t2',
-            market_id='m2', event_id='evt1',
+            symbol='T2',
+            name='O2',
+            token_id='t2',
+            market_id='m2',
+            event_id='evt1',
         )
         s = EventSumArbStrategy(
-            event_id='evt1', min_edge=0.01, fee_rate=0.0,
-            cooldown_seconds=0.0, trade_size=5.0,
+            event_id='evt1',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
+            trade_size=5.0,
         )
         trader = _make_trader()
         _seed_order_book(trader, t1, Decimal('0.15'), Decimal('0.25'))
@@ -669,11 +714,15 @@ class TestEventSumArbDetection:
     async def test_min_markets_not_met(self):
         """If fewer markets than min_markets, no trade."""
         t1 = PolyMarketTicker(
-            symbol='T1', name='O1', token_id='t1',
-            market_id='m1', event_id='evt1',
+            symbol='T1',
+            name='O1',
+            token_id='t1',
+            market_id='m1',
+            event_id='evt1',
         )
         s = EventSumArbStrategy(
-            event_id='evt1', min_markets=3,
+            event_id='evt1',
+            min_markets=3,
         )
         trader = _make_trader([t1])
         await s.process_event(_price_event(t1, Decimal('0.80')), trader)
@@ -707,13 +756,15 @@ class TestStructuralArbExpected:
 
 
 class TestStructuralArbViolation:
-
     async def test_no_violation_when_within_band(self):
         ticker_a = _make_ticker('A', market_id='mkt_a')
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = StructuralArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            slope=1.0, intercept=0.0, min_edge=0.05,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            slope=1.0,
+            intercept=0.0,
+            min_edge=0.05,
         )
         trader = _make_trader([ticker_a, ticker_b])
 
@@ -728,8 +779,11 @@ class TestStructuralArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = StructuralArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            slope=1.0, intercept=0.0, min_edge=0.02,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            slope=1.0,
+            intercept=0.0,
+            min_edge=0.02,
             cooldown_seconds=0.0,
         )
         trader = _make_trader()
@@ -747,8 +801,11 @@ class TestStructuralArbViolation:
         ticker_b = _make_ticker('B', market_id='mkt_b', no_token_id='B_NO')
         ticker_b_no = ticker_b.get_no_ticker()
         s = StructuralArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            slope=1.0, intercept=0.0, min_edge=0.02,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            slope=1.0,
+            intercept=0.0,
+            min_edge=0.02,
             cooldown_seconds=0.0,
         )
         trader = _make_trader()
@@ -766,9 +823,13 @@ class TestStructuralArbViolation:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = StructuralArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            slope=1.0, intercept=0.0, min_edge=0.05,
-            exit_fraction=0.5, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            slope=1.0,
+            intercept=0.0,
+            min_edge=0.05,
+            exit_fraction=0.5,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()
@@ -800,8 +861,11 @@ class TestConstraintArbIntegration:
         ticker_b = _make_ticker('B', market_id='mkt_b', no_token_id='B_NO')
         ticker_b_no = ticker_b.get_no_ticker()
         s = ExclusivityArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()
@@ -825,8 +889,11 @@ class TestConstraintArbIntegration:
         ticker_a_no = ticker_a.get_no_ticker()
         ticker_b = _make_ticker('B', market_id='mkt_b')
         s = ImplicationArbStrategy(
-            market_id_a='mkt_a', market_id_b='mkt_b',
-            min_edge=0.01, fee_rate=0.0, cooldown_seconds=0.0,
+            market_id_a='mkt_a',
+            market_id_b='mkt_b',
+            min_edge=0.01,
+            fee_rate=0.0,
+            cooldown_seconds=0.0,
             trade_size=5.0,
         )
         trader = _make_trader()

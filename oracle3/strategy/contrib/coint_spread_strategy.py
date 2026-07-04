@@ -25,15 +25,13 @@ from collections import deque
 from decimal import Decimal
 
 from oracle3.events.events import Event, PriceChangeEvent
+from oracle3.pricing.fees import kalshi_round_trip_fee
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative per-side fee estimate (0.5%)
-_FEE_PER_SIDE = Decimal('0.005')
 
 
 class CointSpreadStrategy(QuantStrategy):
@@ -68,7 +66,9 @@ class CointSpreadStrategy(QuantStrategy):
     cooldown_seconds:
         Minimum seconds between successive entry attempts.
     fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate). Fee is nonlinear in price -- computed per-leg
+        from the real formula rather than a flat rate.
     """
 
     name = 'coint_spread'
@@ -86,7 +86,7 @@ class CointSpreadStrategy(QuantStrategy):
         warmup: int = 200,
         max_position: float = 100.0,
         cooldown_seconds: float = 120.0,
-        fee_rate: float = 0.005,
+        fee_rate: float = 0.07,
     ) -> None:
         super().__init__()
         self._id_a = market_id_a
@@ -134,10 +134,9 @@ class CointSpreadStrategy(QuantStrategy):
         self, trader: Trader, market_id: str, *, yes: bool = True
     ) -> Ticker | None:
         for ticker in trader.market_data.order_books:
-            is_no = (
-                ticker.symbol.endswith('_NO')
-                or (getattr(ticker, 'name', '') or '').startswith('NO ')
-            )
+            is_no = ticker.symbol.endswith('_NO') or (
+                getattr(ticker, 'name', '') or ''
+            ).startswith('NO ')
             if yes and is_no:
                 continue
             if not yes and not is_no:
@@ -173,8 +172,11 @@ class CointSpreadStrategy(QuantStrategy):
         self._calibrated = True
         logger.info(
             'Warmup done (%d): mean=%.6f std=%.6f entry=%.6f exit=%.6f',
-            n, mean, std,
-            float(self._entry_threshold), float(self._exit_threshold),
+            n,
+            mean,
+            std,
+            float(self._entry_threshold),
+            float(self._exit_threshold),
         )
 
     # -- Core logic -----------------------------------------------------------
@@ -214,15 +216,32 @@ class CointSpreadStrategy(QuantStrategy):
         # Post-warmup: continue updating rolling buffer for recalibration
         self._spread_buffer.append(spread_f)
         deviation = spread - self._expected_spread
+        fee_multiplier = float(self.fee_rate)
+        pa = float(self._price_a)
+        pb = float(self._price_b)
+        # short_spread: sell A (NO leg at 1-pa), buy B (YES leg at pb)
+        fee_short = Decimal(
+            str(
+                kalshi_round_trip_fee(1 - pa, fee_multiplier)
+                + kalshi_round_trip_fee(pb, fee_multiplier)
+            )
+        )
+        # long_spread: buy A (YES leg at pa), sell B (NO leg at 1-pb)
+        fee_long = Decimal(
+            str(
+                kalshi_round_trip_fee(pa, fee_multiplier)
+                + kalshi_round_trip_fee(1 - pb, fee_multiplier)
+            )
+        )
 
         if self._position_state == 'flat':
-            if deviation > self._entry_threshold:
+            if deviation > self._entry_threshold + fee_short:
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
                     return
                 self._last_entry_time = now
                 await self._enter_short_spread(trader, deviation)
-            elif deviation < -self._entry_threshold:
+            elif deviation < -self._entry_threshold - fee_long:
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
                     return
@@ -250,9 +269,7 @@ class CointSpreadStrategy(QuantStrategy):
             if abs(deviation) < self._exit_threshold:
                 await self._exit_position(trader, deviation)
 
-    async def _enter_long_spread(
-        self, trader: Trader, deviation: Decimal
-    ) -> None:
+    async def _enter_long_spread(self, trader: Trader, deviation: Decimal) -> None:
         """Buy A, sell B -- spread is below mean (B overpriced relative to A)."""
         ticker_a = self._find_ticker(trader, self._id_a, yes=True)
         ticker_b_no = self._find_ticker(trader, self._id_b, yes=False)
@@ -262,8 +279,10 @@ class CointSpreadStrategy(QuantStrategy):
         if ticker_a and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a,
-                    limit_price=self._price_a, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a,
+                    limit_price=self._price_a,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -277,7 +296,8 @@ class CointSpreadStrategy(QuantStrategy):
         if ticker_b_no and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b_no,
                     limit_price=Decimal('1') - self._price_b,
                     quantity=self.trade_size,
                 )
@@ -297,8 +317,7 @@ class CointSpreadStrategy(QuantStrategy):
             action='BUY_SPREAD',
             executed=executed_legs > 0,
             reasoning=(
-                f'Spread below mean: dev={float(deviation):.4f}  '
-                f'legs={executed_legs}/2'
+                f'Spread below mean: dev={float(deviation):.4f}  legs={executed_legs}/2'
             ),
             signal_values={
                 'price_a': float(self._price_a or 0),
@@ -309,9 +328,7 @@ class CointSpreadStrategy(QuantStrategy):
         )
         logger.info('ENTER long_spread: dev=%.4f', deviation)
 
-    async def _enter_short_spread(
-        self, trader: Trader, deviation: Decimal
-    ) -> None:
+    async def _enter_short_spread(self, trader: Trader, deviation: Decimal) -> None:
         """Sell A, buy B -- spread is above mean (A overpriced relative to B)."""
         ticker_a_no = self._find_ticker(trader, self._id_a, yes=False)
         ticker_b = self._find_ticker(trader, self._id_b, yes=True)
@@ -321,7 +338,8 @@ class CointSpreadStrategy(QuantStrategy):
         if ticker_a_no and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a_no,
                     limit_price=Decimal('1') - self._price_a,
                     quantity=self.trade_size,
                 )
@@ -337,8 +355,10 @@ class CointSpreadStrategy(QuantStrategy):
         if ticker_b and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b,
-                    limit_price=self._price_b, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b,
+                    limit_price=self._price_b,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -356,8 +376,7 @@ class CointSpreadStrategy(QuantStrategy):
             action='SELL_SPREAD',
             executed=executed_legs > 0,
             reasoning=(
-                f'Spread above mean: dev={float(deviation):.4f}  '
-                f'legs={executed_legs}/2'
+                f'Spread above mean: dev={float(deviation):.4f}  legs={executed_legs}/2'
             ),
             signal_values={
                 'price_a': float(self._price_a or 0),
@@ -368,9 +387,7 @@ class CointSpreadStrategy(QuantStrategy):
         )
         logger.info('ENTER short_spread: dev=%.4f', deviation)
 
-    async def _exit_position(
-        self, trader: Trader, deviation: Decimal
-    ) -> None:
+    async def _exit_position(self, trader: Trader, deviation: Decimal) -> None:
         """Close both legs -- spread has converged back to mean."""
         executed_legs = 0
         for pos in trader.position_manager.positions.values():
@@ -379,8 +396,10 @@ class CointSpreadStrategy(QuantStrategy):
                 if best_bid:
                     try:
                         result = await trader.place_order(
-                            side=TradeSide.SELL, ticker=pos.ticker,
-                            limit_price=best_bid.price, quantity=pos.quantity,
+                            side=TradeSide.SELL,
+                            ticker=pos.ticker,
+                            limit_price=best_bid.price,
+                            quantity=pos.quantity,
                         )
                         if not result.failure_reason:
                             executed_legs += 1
@@ -396,10 +415,7 @@ class CointSpreadStrategy(QuantStrategy):
             ticker_name=f'coint({self._id_a[:10]}|{self._id_b[:10]})',
             action='CLOSE_SPREAD',
             executed=executed_legs > 0,
-            reasoning=(
-                f'Spread converged: was {prev}, '
-                f'dev={float(deviation):.4f}'
-            ),
+            reasoning=(f'Spread converged: was {prev}, dev={float(deviation):.4f}'),
             signal_values={
                 'price_a': float(self._price_a or 0),
                 'price_b': float(self._price_b or 0),

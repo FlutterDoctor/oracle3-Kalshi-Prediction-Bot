@@ -28,15 +28,13 @@ import time
 from decimal import Decimal
 
 from oracle3.events.events import Event, PriceChangeEvent
+from oracle3.pricing.fees import kalshi_round_trip_fee
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-# Conservative per-side fee estimate (0.5%)
-_FEE_PER_SIDE = Decimal('0.005')
 
 
 class ConditionalArbStrategy(QuantStrategy):
@@ -66,7 +64,9 @@ class ConditionalArbStrategy(QuantStrategy):
     cooldown_seconds:
         Minimum seconds between successive entry attempts.
     fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate). Fee is nonlinear in price -- computed per-leg
+        from the real formula rather than a flat rate.
     """
 
     name = 'conditional_arb'
@@ -82,7 +82,7 @@ class ConditionalArbStrategy(QuantStrategy):
         cond_upper: float = 1.0,
         min_edge: float = 0.02,
         cooldown_seconds: float = 120.0,
-        fee_rate: float = 0.005,
+        fee_rate: float = 0.07,
     ) -> None:
         super().__init__()
         self._id_a = market_id_a
@@ -119,10 +119,9 @@ class ConditionalArbStrategy(QuantStrategy):
         self, trader: Trader, market_id: str, *, yes: bool = True
     ) -> Ticker | None:
         for ticker in trader.market_data.order_books:
-            is_no = (
-                ticker.symbol.endswith('_NO')
-                or (getattr(ticker, 'name', '') or '').startswith('NO ')
-            )
+            is_no = ticker.symbol.endswith('_NO') or (
+                getattr(ticker, 'name', '') or ''
+            ).startswith('NO ')
             if yes and is_no:
                 continue
             if not yes and not is_no:
@@ -175,16 +174,25 @@ class ConditionalArbStrategy(QuantStrategy):
         pb = float(self._price_b)
         lower, upper = self._compute_bounds(pb)
         fee_buffer = float(self.min_edge)
+        fee_multiplier = float(self.fee_rate)
+        # A too high -> sell A (NO leg at 1-pa), buy B (YES leg at pb)
+        fee_short_a = kalshi_round_trip_fee(
+            1 - pa, fee_multiplier
+        ) + kalshi_round_trip_fee(pb, fee_multiplier)
+        # A too low -> buy A (YES leg at pa), sell B (NO leg at 1-pb)
+        fee_long_a = kalshi_round_trip_fee(pa, fee_multiplier) + kalshi_round_trip_fee(
+            1 - pb, fee_multiplier
+        )
 
         if self._position_state == 'flat':
-            if pa > upper + fee_buffer:
+            if pa > upper + fee_buffer + fee_short_a:
                 # A too high -> sell A, buy B
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
                     return
                 self._last_entry_time = now
                 await self._enter_short_a(trader, pa, lower, upper)
-            elif pa < lower - fee_buffer:
+            elif pa < lower - fee_buffer - fee_long_a:
                 # A too low -> buy A, sell B
                 now = time.monotonic()
                 if now - self._last_entry_time < self.cooldown_seconds:
@@ -197,12 +205,13 @@ class ConditionalArbStrategy(QuantStrategy):
                     action='HOLD',
                     executed=False,
                     reasoning=(
-                        f'A={pa:.4f} in band [{lower:.4f}, {upper:.4f}] '
-                        f'(B={pb:.4f})'
+                        f'A={pa:.4f} in band [{lower:.4f}, {upper:.4f}] (B={pb:.4f})'
                     ),
                     signal_values={
-                        'price_a': pa, 'price_b': pb,
-                        'lower': lower, 'upper': upper,
+                        'price_a': pa,
+                        'price_b': pb,
+                        'lower': lower,
+                        'upper': upper,
                     },
                 )
         else:
@@ -211,7 +220,11 @@ class ConditionalArbStrategy(QuantStrategy):
                 await self._exit(trader, pa, lower, upper)
 
     async def _enter_short_a(
-        self, trader: Trader, pa: float, lower: float, upper: float,
+        self,
+        trader: Trader,
+        pa: float,
+        lower: float,
+        upper: float,
     ) -> None:
         """A too expensive -> sell A (buy NO), buy B (buy YES)."""
         ticker_a_no = self._find_ticker(trader, self._id_a, yes=False)
@@ -222,7 +235,8 @@ class ConditionalArbStrategy(QuantStrategy):
         if ticker_a_no and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a_no,
                     limit_price=Decimal('1') - self._price_a,
                     quantity=self.trade_size,
                 )
@@ -238,8 +252,10 @@ class ConditionalArbStrategy(QuantStrategy):
         if ticker_b and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b,
-                    limit_price=self._price_b, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b,
+                    limit_price=self._price_b,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -257,19 +273,24 @@ class ConditionalArbStrategy(QuantStrategy):
             action='ENTER_SHORT_A',
             executed=executed_legs > 0,
             reasoning=(
-                f'A={pa:.4f} > upper={upper:.4f}: sell A, buy B  '
-                f'legs={executed_legs}/2'
+                f'A={pa:.4f} > upper={upper:.4f}: sell A, buy B  legs={executed_legs}/2'
             ),
             signal_values={
-                'price_a': pa, 'price_b': float(self._price_b or 0),
-                'lower': lower, 'upper': upper,
+                'price_a': pa,
+                'price_b': float(self._price_b or 0),
+                'lower': lower,
+                'upper': upper,
                 'executed_legs': executed_legs,
             },
         )
         logger.info('ENTER conditional arb: A too high, sell A buy B')
 
     async def _enter_long_a(
-        self, trader: Trader, pa: float, lower: float, upper: float,
+        self,
+        trader: Trader,
+        pa: float,
+        lower: float,
+        upper: float,
     ) -> None:
         """A too cheap -> buy A (buy YES), sell B (buy NO)."""
         ticker_a = self._find_ticker(trader, self._id_a, yes=True)
@@ -280,8 +301,10 @@ class ConditionalArbStrategy(QuantStrategy):
         if ticker_a and self._price_a is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_a,
-                    limit_price=self._price_a, quantity=self.trade_size,
+                    side=TradeSide.BUY,
+                    ticker=ticker_a,
+                    limit_price=self._price_a,
+                    quantity=self.trade_size,
                 )
                 if not result.failure_reason:
                     executed_legs += 1
@@ -295,7 +318,8 @@ class ConditionalArbStrategy(QuantStrategy):
         if ticker_b_no and self._price_b is not None:
             try:
                 result = await trader.place_order(
-                    side=TradeSide.BUY, ticker=ticker_b_no,
+                    side=TradeSide.BUY,
+                    ticker=ticker_b_no,
                     limit_price=Decimal('1') - self._price_b,
                     quantity=self.trade_size,
                 )
@@ -315,19 +339,24 @@ class ConditionalArbStrategy(QuantStrategy):
             action='ENTER_LONG_A',
             executed=executed_legs > 0,
             reasoning=(
-                f'A={pa:.4f} < lower={lower:.4f}: buy A, sell B  '
-                f'legs={executed_legs}/2'
+                f'A={pa:.4f} < lower={lower:.4f}: buy A, sell B  legs={executed_legs}/2'
             ),
             signal_values={
-                'price_a': pa, 'price_b': float(self._price_b or 0),
-                'lower': lower, 'upper': upper,
+                'price_a': pa,
+                'price_b': float(self._price_b or 0),
+                'lower': lower,
+                'upper': upper,
                 'executed_legs': executed_legs,
             },
         )
         logger.info('ENTER conditional arb: A too low, buy A sell B')
 
     async def _exit(
-        self, trader: Trader, pa: float, lower: float, upper: float,
+        self,
+        trader: Trader,
+        pa: float,
+        lower: float,
+        upper: float,
     ) -> None:
         """Close all positions -- A back inside the valid band."""
         executed_legs = 0
@@ -337,8 +366,10 @@ class ConditionalArbStrategy(QuantStrategy):
                 if best_bid:
                     try:
                         result = await trader.place_order(
-                            side=TradeSide.SELL, ticker=pos.ticker,
-                            limit_price=best_bid.price, quantity=pos.quantity,
+                            side=TradeSide.SELL,
+                            ticker=pos.ticker,
+                            limit_price=best_bid.price,
+                            quantity=pos.quantity,
                         )
                         if not result.failure_reason:
                             executed_legs += 1
@@ -353,12 +384,12 @@ class ConditionalArbStrategy(QuantStrategy):
             ticker_name=f'cond({self._id_a[:10]}|{self._id_b[:10]})',
             action='EXIT',
             executed=executed_legs > 0,
-            reasoning=(
-                f'A={pa:.4f} back in [{lower:.4f}, {upper:.4f}] (was {prev})'
-            ),
+            reasoning=(f'A={pa:.4f} back in [{lower:.4f}, {upper:.4f}] (was {prev})'),
             signal_values={
-                'price_a': pa, 'price_b': float(self._price_b or 0),
-                'lower': lower, 'upper': upper,
+                'price_a': pa,
+                'price_b': float(self._price_b or 0),
+                'lower': lower,
+                'upper': upper,
             },
         )
         logger.info('EXIT conditional arb: A back in band')

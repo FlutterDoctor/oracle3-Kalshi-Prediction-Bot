@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 
 from oracle3.data.market_data_manager import MarketDataManager
 from oracle3.position.position_manager import PositionManager
+from oracle3.pricing.fees import kalshi_order_fee
 from oracle3.risk.risk_manager import RiskManager
-from oracle3.ticker.ticker import Ticker
+from oracle3.ticker.ticker import KalshiTicker, Ticker
 
 from .trader import Trader
 from .types import (
@@ -42,6 +43,16 @@ class PaperTrader(Trader):
         self.min_fill_rate = min_fill_rate
         self.max_fill_rate = max_fill_rate
         self.commission_rate = commission_rate
+
+    def _estimate_commission(
+        self, ticker: Ticker, quantity: Decimal, price: Decimal
+    ) -> Decimal:
+        """Estimate the fee for a trade, using the real Kalshi formula for
+        Kalshi tickers (its fee is nonlinear in price, so a flat rate
+        mis-prices it) and the configured flat rate otherwise."""
+        if isinstance(ticker, KalshiTicker):
+            return kalshi_order_fee(int(quantity), price)
+        return quantity * price * self.commission_rate
 
     def _simulate_execution(
         self, side: TradeSide, ticker: Ticker, limit_price: Decimal, quantity: Decimal
@@ -93,7 +104,7 @@ class PaperTrader(Trader):
                 ticker=ticker,
                 price=limit_price,
                 quantity=filled_qty,
-                commission=filled_qty * limit_price * self.commission_rate,
+                commission=self._estimate_commission(ticker, filled_qty, limit_price),
             )
         ]
 
@@ -163,7 +174,9 @@ class PaperTrader(Trader):
         # Check if we have enough cash
         if side == TradeSide.BUY:
             cash_position = self.position_manager.get_position(ticker.collateral)
-            cash_required = quantity * limit_price * (1 + self.commission_rate)
+            cash_required = quantity * limit_price + self._estimate_commission(
+                ticker, quantity, limit_price
+            )
             if cash_position is None or cash_position.quantity < cash_required:
                 await self._alert_rejected(OrderFailureReason.INSUFFICIENT_CASH, ticker)
                 return PlaceOrderResult(
@@ -172,11 +185,15 @@ class PaperTrader(Trader):
                 )
 
         # Check risk limits
-        if not await self.risk_manager.check_trade(ticker, side, quantity, limit_price):
+        risk_ok, risk_reason = await self.risk_manager.check_trade(
+            ticker, side, quantity, limit_price
+        )
+        if not risk_ok:
             await self._alert_rejected(OrderFailureReason.RISK_CHECK_FAILED, ticker)
             return PlaceOrderResult(
                 order=None,
                 failure_reason=OrderFailureReason.RISK_CHECK_FAILED,
+                failure_detail=risk_reason,
             )
 
         # Execute order

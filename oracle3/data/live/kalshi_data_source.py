@@ -47,9 +47,15 @@ class LiveKalshiDataSource(DataSource):
         event_cache_file: str = 'kalshi_events_cache.jsonl',
         polling_interval: float = 60.0,
         reprocess_on_start: bool = True,
+        discovery_only: bool = False,
     ):
         self.polling_interval = polling_interval
         self.event_cache_file = event_cache_file
+        # When a websocket source owns live pricing, this REST source only
+        # discovers new markets/events (and emits their news) — it skips
+        # order-book event emission so the two sources don't fight over
+        # top-of-book state.
+        self.discovery_only = discovery_only
         self.processed_event_tickers: set[str] = set()
         self.event_queue: asyncio.Queue = asyncio.Queue()
         self.last_prices: dict[str, tuple[int, int]] = {}
@@ -207,6 +213,14 @@ class LiveKalshiDataSource(DataSource):
         except Exception as e:
             logger.warning('News emit error for "%s": %s', market_question[:50], e)
 
+    async def _emit_order_book_events(self, market: dict[str, Any]) -> None:
+        """Emit order book events from market-level bid/ask, unless a paired
+        websocket source already owns pricing (``discovery_only``)."""
+        if self.discovery_only:
+            return
+        for ob_event in self._market_to_order_book_events(market):
+            await self.event_queue.put(ob_event)
+
     async def _poll_data(self) -> None:
         while True:
             try:
@@ -246,10 +260,7 @@ class LiveKalshiDataSource(DataSource):
                             )
 
                     # Use market-level bid/ask to create order book events
-                    ob_events = self._market_to_order_book_events(market)
-
-                    for ob_event in ob_events:
-                        await self.event_queue.put(ob_event)
+                    await self._emit_order_book_events(market)
 
                     has_ask = (market.get('yes_ask', 0) or 0) > 0
 

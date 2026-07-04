@@ -262,11 +262,15 @@ class PolymarketTrader(Trader):
                 )
 
         # Check risk limits
-        if not await self.risk_manager.check_trade(ticker, side, quantity, limit_price):
+        risk_ok, risk_reason = await self.risk_manager.check_trade(
+            ticker, side, quantity, limit_price
+        )
+        if not risk_ok:
             await self._alert_rejected(OrderFailureReason.RISK_CHECK_FAILED, ticker)
             return PlaceOrderResult(
                 order=None,
                 failure_reason=OrderFailureReason.RISK_CHECK_FAILED,
+                failure_detail=risk_reason,
             )
 
         try:

@@ -79,6 +79,7 @@ class Order:
 class PlaceOrderResult:
     order: Order | None = None
     failure_reason: OrderFailureReason | None = None
+    failure_detail: str = ''
 
     @property
     def status(self) -> str:
@@ -103,6 +104,7 @@ class PlaceOrderResult:
             'failure_reason': (
                 self.failure_reason.value if self.failure_reason is not None else None
             ),
+            'failure_detail': self.failure_detail,
             'order': self.order.to_payload() if self.order is not None else None,
         }
 

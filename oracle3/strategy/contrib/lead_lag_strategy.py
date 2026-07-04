@@ -35,6 +35,7 @@ from decimal import Decimal
 from typing import ClassVar
 
 from oracle3.events.events import Event, OrderBookEvent, PriceChangeEvent
+from oracle3.pricing.fees import round_trip_fee_for_ticker
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
 from oracle3.trader.trader import Trader
@@ -42,8 +43,10 @@ from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
 
-# Conservative fee estimate per side (buy + sell round-trip = 2x)
-_FEE_PER_SIDE = Decimal('0.005')
+# Fallback flat fee estimate used only before the follower ticker/price is
+# known (so _net_edge stays callable in isolation); the real per-leg fee
+# schedule is used once a follower context is available.
+_FALLBACK_FEE = Decimal('0.005') * 2
 
 
 class LeadLagStrategy(QuantStrategy):
@@ -84,6 +87,10 @@ class LeadLagStrategy(QuantStrategy):
         Expected number of follower observations that lag behind the leader.
         Affects correlation computation (leader[t] vs follower[t + lag]).
         Set to 0 for contemporaneous correlation.
+    fee_rate:
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate) applied to the follower leg. Fee is nonlinear in
+        price -- computed from the real formula rather than a flat rate.
     """
 
     name: ClassVar[str] = 'lead_lag'
@@ -103,6 +110,7 @@ class LeadLagStrategy(QuantStrategy):
         min_correlation: float = 0.3,
         correlation_window: int = 30,
         lead_lag_steps: int = 0,
+        fee_rate: float = 0.07,
     ) -> None:
         super().__init__()
         self._leader_symbol = leader_symbol
@@ -116,6 +124,7 @@ class LeadLagStrategy(QuantStrategy):
         self._min_correlation = min_correlation
         self._correlation_window = correlation_window
         self._lead_lag_steps = max(0, lead_lag_steps)
+        self._fee_rate = fee_rate
 
         # ---- Price tracking ----
         # Rolling window of leader prices for mean/std calculation
@@ -169,7 +178,11 @@ class LeadLagStrategy(QuantStrategy):
         for candidate in (symbol, name, market_id, token_id):
             if not candidate:
                 continue
-            if target_symbol == candidate or target_symbol in candidate or candidate in target_symbol:
+            if (
+                target_symbol == candidate
+                or target_symbol in candidate
+                or candidate in target_symbol
+            ):
                 return True
         return False
 
@@ -202,12 +215,15 @@ class LeadLagStrategy(QuantStrategy):
 
         # Align: leader from [-(n_needed) : -lag] if lag > 0, else last window
         if lag > 0:
-            leader_window = leader_list[-(self._correlation_window + lag): -lag]
+            leader_window = leader_list[-(self._correlation_window + lag) : -lag]
         else:
-            leader_window = leader_list[-self._correlation_window:]
-        follower_window = follower_list[-self._correlation_window:]
+            leader_window = leader_list[-self._correlation_window :]
+        follower_window = follower_list[-self._correlation_window :]
 
-        if len(leader_window) != self._correlation_window or len(follower_window) != self._correlation_window:
+        if (
+            len(leader_window) != self._correlation_window
+            or len(follower_window) != self._correlation_window
+        ):
             return None
 
         n = self._correlation_window
@@ -233,7 +249,9 @@ class LeadLagStrategy(QuantStrategy):
     # Order book helpers
     # ------------------------------------------------------------------
 
-    def _update_book_prices(self, ticker: Ticker, trader: Trader, is_leader: bool) -> None:
+    def _update_book_prices(
+        self, ticker: Ticker, trader: Trader, is_leader: bool
+    ) -> None:
         """Refresh best bid/ask from the trader's market data manager."""
         bid_level = trader.market_data.get_best_bid(ticker)
         ask_level = trader.market_data.get_best_ask(ticker)
@@ -244,7 +262,9 @@ class LeadLagStrategy(QuantStrategy):
             self._follower_best_bid = bid_level.price if bid_level else None
             self._follower_best_ask = ask_level.price if ask_level else None
 
-    def _get_mid_price(self, best_bid: Decimal | None, best_ask: Decimal | None) -> Decimal | None:
+    def _get_mid_price(
+        self, best_bid: Decimal | None, best_ask: Decimal | None
+    ) -> Decimal | None:
         """Compute mid-price from bid/ask. Returns None if either is missing."""
         if best_bid is not None and best_ask is not None:
             return (best_bid + best_ask) / Decimal('2')
@@ -255,8 +275,14 @@ class LeadLagStrategy(QuantStrategy):
     # ------------------------------------------------------------------
 
     def _net_edge(self, gross_move: float) -> float:
-        """Compute net edge after round-trip fees (buy + sell)."""
-        return abs(gross_move) - float(_FEE_PER_SIDE * 2)
+        """Compute net edge after round-trip fees (buy + sell) on the follower leg."""
+        if self._follower_ticker is not None and self._follower_price is not None:
+            fee = round_trip_fee_for_ticker(
+                self._follower_ticker, float(self._follower_price), self._fee_rate
+            )
+        else:
+            fee = float(_FALLBACK_FEE)
+        return abs(gross_move) - fee
 
     # ------------------------------------------------------------------
     # Main event handler
@@ -299,9 +325,7 @@ class LeadLagStrategy(QuantStrategy):
             self._leader_corr_prices.append(float(price))
             if self._leader_ticker is None:
                 self._leader_ticker = ticker
-                logger.info(
-                    'LeadLag: matched leader ticker %s', ticker.symbol[:30]
-                )
+                logger.info('LeadLag: matched leader ticker %s', ticker.symbol[:30])
             self._update_book_prices(ticker, trader, is_leader=True)
 
         if is_follower:
@@ -309,9 +333,7 @@ class LeadLagStrategy(QuantStrategy):
             self._follower_corr_prices.append(float(price))
             if self._follower_ticker is None:
                 self._follower_ticker = ticker
-                logger.info(
-                    'LeadLag: matched follower ticker %s', ticker.symbol[:30]
-                )
+                logger.info('LeadLag: matched follower ticker %s', ticker.symbol[:30])
             self._update_book_prices(ticker, trader, is_leader=False)
             # Count follower updates while in a position
             if self._position_state != 'flat':
@@ -375,7 +397,7 @@ class LeadLagStrategy(QuantStrategy):
                 executed=False,
                 reasoning=(
                     f'net_edge={net:.4f} <= 0 after fees '
-                    f'(gross={abs_move:.4f}, fees={float(_FEE_PER_SIDE * 2):.4f})'
+                    f'(gross={abs_move:.4f}, fee={abs_move - net:.4f})'
                 ),
                 signal_values={
                     'leader_move': leader_move,
@@ -478,7 +500,8 @@ class LeadLagStrategy(QuantStrategy):
         )
         logger.info(
             'ENTER long_follower: leader_move=%.4f net_edge=%.4f',
-            leader_move, self._net_edge(leader_move),
+            leader_move,
+            self._net_edge(leader_move),
         )
 
     async def _enter_short(self, trader: Trader, leader_move: float) -> None:
@@ -532,7 +555,8 @@ class LeadLagStrategy(QuantStrategy):
         )
         logger.info(
             'ENTER short_follower: leader_move=%.4f net_edge=%.4f',
-            leader_move, self._net_edge(leader_move),
+            leader_move,
+            self._net_edge(leader_move),
         )
 
     # ------------------------------------------------------------------
@@ -614,20 +638,26 @@ class LeadLagStrategy(QuantStrategy):
                         else:
                             logger.warning(
                                 'LeadLag exit failed: %s - %s',
-                                pos.ticker.symbol, result.failure_reason,
+                                pos.ticker.symbol,
+                                result.failure_reason,
                             )
                     except Exception:
-                        logger.exception(
-                            'LeadLag exit error: %s', pos.ticker.symbol
-                        )
+                        logger.exception('LeadLag exit error: %s', pos.ticker.symbol)
 
         # Compute PnL estimate
+        if self._follower_ticker is not None and self._follower_price is not None:
+            exit_fee = round_trip_fee_for_ticker(
+                self._follower_ticker, float(self._follower_price), self._fee_rate
+            )
+        else:
+            exit_fee = float(_FALLBACK_FEE)
+
         if self._position_state == 'long_follower':
-            pnl_estimate = follower_move - float(_FEE_PER_SIDE * 2)
+            pnl_estimate = follower_move - exit_fee
         else:
             # Short: we bought NO at (1 - entry_yes), now selling NO.
             # Profit if YES went down (NO went up).
-            pnl_estimate = -follower_move - float(_FEE_PER_SIDE * 2)
+            pnl_estimate = -follower_move - exit_fee
 
         self.record_decision(
             ticker_name=f'lag({self._leader_symbol[:15]}→{self._follower_symbol[:15]})',
@@ -648,8 +678,11 @@ class LeadLagStrategy(QuantStrategy):
         )
         logger.info(
             'EXIT %s (%s): catchup=%.3f hold=%d pnl_est=%.4f',
-            self._position_state, reason, catchup_ratio,
-            self._hold_count, pnl_estimate,
+            self._position_state,
+            reason,
+            catchup_ratio,
+            self._hold_count,
+            pnl_estimate,
         )
         self._position_state = 'flat'
 

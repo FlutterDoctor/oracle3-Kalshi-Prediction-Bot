@@ -141,9 +141,38 @@
 
   /* live market prices */
   .pricerow { display:flex; justify-content:space-between; align-items:center;
-    padding:3px 0; gap:8px; font-size:12px; }
+    padding:3px 2px; gap:8px; font-size:12px; border-radius:4px; }
   .pricerow .pname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
   .pricepct { font-weight:700; }
+  .minispark { width:52px; height:18px; display:inline-block; flex-shrink:0; }
+  .freshness { font-size:9px; color:var(--muted); white-space:nowrap; min-width:44px; text-align:right; }
+  .freshness.fresh-green { color:var(--green); }
+  .freshness.fresh-amber { color:var(--amber); }
+  .freshness.fresh-red { color:var(--red); font-weight:600; }
+  @keyframes flashUp { 0%{background:rgba(63,185,80,.35);} 100%{background:transparent;} }
+  @keyframes flashDown { 0%{background:rgba(248,81,73,.35);} 100%{background:transparent;} }
+  .pricerow.flashup { animation:flashUp 900ms ease-out; }
+  .pricerow.flashdown { animation:flashDown 900ms ease-out; }
+  .sidetag { font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; margin-right:4px;
+    letter-spacing:.3px; }
+  .sidetag.yes { background:rgba(63,185,80,.15); color:var(--green); }
+  .sidetag.no { background:rgba(248,81,73,.15); color:var(--red); }
+
+  /* live bot status metrics */
+  .statmetrics { display:flex; flex-wrap:wrap; gap:6px; padding:0 14px 9px;
+    background:var(--panel2); border-top:1px solid transparent; }
+  .statchip { font-size:10px; background:var(--panel); border:1px solid var(--border);
+    border-radius:5px; padding:2px 6px; color:var(--text); font-variant-numeric:tabular-nums; }
+  .statchip-lbl { color:var(--muted); margin-right:3px; }
+
+  /* exchange feed connection strip */
+  .feedstrip { display:flex; gap:8px; padding:7px 20px; background:var(--panel2);
+    border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .feedpill { font-size:11px; padding:3px 10px; border-radius:20px; border:1px solid var(--border);
+    background:var(--panel); color:var(--muted); }
+  .feedpill.ok { color:var(--green); border-color:rgba(63,185,80,.4); }
+  .feedpill.warn { color:var(--amber); border-color:rgba(210,153,34,.4); }
+  .feedpill.bad { color:var(--red); border-color:rgba(248,81,73,.4); }
 
   /* thresholds */
   .thresh { display:grid; grid-template-columns:repeat(3,1fr) auto; gap:6px; align-items:end; }
@@ -181,6 +210,7 @@
     <span class="conn" id="conn" title="connection"></span>
   </div>
 </header>
+<div class="feedstrip" id="feedstrip"></div>
 
 <main>
   <!-- LIVE TAB -->
@@ -392,6 +422,59 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;'
 
 /* ---------- live render ---------- */
 let manualState = {}; // preserve manual-form inputs across re-renders
+let lastPrices = {}; // gid:market_id -> last numeric price, for flash-on-change
+
+function fmtAgo(secs){
+  if(secs==null) return '';
+  if(secs<1) return 'live';
+  if(secs<60) return Math.round(secs)+'s ago';
+  return Math.round(secs/60)+'m ago';
+}
+function freshness(secs){
+  if(secs==null) return {cls:'', text:'—'};
+  if(secs<15) return {cls:'fresh-green', text:fmtAgo(secs)};
+  if(secs<60) return {cls:'fresh-amber', text:fmtAgo(secs)};
+  return {cls:'fresh-red', text:'stale · '+fmtAgo(secs)};
+}
+
+function feedPill(exchange, f){
+  const label = exchange.charAt(0).toUpperCase()+exchange.slice(1);
+  const state = f ? f.connection_state : 'unavailable';
+  let cls = 'feedpill', text;
+  if(state === 'connected'){
+    cls += ' ok';
+    text = `${label}: connected` + (f.seconds_since_last_message!=null ? ` · updated ${fmtAgo(f.seconds_since_last_message)}` : '');
+  } else if(state === 'connecting' || state === 'reconnecting'){
+    cls += ' warn';
+    const eta = f.reconnect_in_seconds;
+    text = `${label}: reconnecting` + (eta!=null ? ` in ${Math.ceil(eta)}s (attempt ${f.reconnect_attempt})` : '…');
+  } else if(state === 'unavailable'){
+    text = `${label}: unavailable`;
+  } else {
+    cls += ' bad';
+    text = `${label}: disconnected`;
+  }
+  const title = (f && f.last_error) ? esc(f.last_error) : '';
+  return `<span class="${cls}" title="${title}">${text}</span>`;
+}
+
+const METRIC_LABELS = {
+  risk_premium:'Edge', lambda:'λ', lambda_hat:'λ̂', confidence:'Conf',
+  fair_value:'FV', market_price:'Mkt', kelly:'Kelly', staleness_hours:'Stale',
+};
+function renderMetrics(metrics){
+  if(!metrics) return '';
+  const order = ['risk_premium','lambda','lambda_hat','confidence','fair_value','market_price','kelly','staleness_hours'];
+  const chips = [];
+  for(const k of order){
+    const v = metrics[k];
+    if(typeof v !== 'number' || Number.isNaN(v)) continue;
+    const label = METRIC_LABELS[k] || k;
+    const text = k==='staleness_hours' ? v.toFixed(1)+'h' : Math.abs(v)<1 ? v.toFixed(3) : v.toFixed(2);
+    chips.push(`<span class="statchip"><span class="statchip-lbl">${label}</span>${text}</span>`);
+  }
+  return chips.length ? `<div class="statmetrics">${chips.join('')}</div>` : '';
+}
 
 function render(state){
   $('aggGames').textContent = state.summary.num_games;
@@ -399,10 +482,21 @@ function render(state){
   const p = $('aggPnl'); p.textContent = sign(state.summary.total_pnl)+fmtUsd(state.summary.total_pnl); p.className='val tnum '+cls(state.summary.total_pnl);
   const r = $('aggRet'); r.textContent = state.summary.return_pct.toFixed(2)+'%'; r.className='val tnum '+cls(state.summary.return_pct);
 
+  const feeds = state.feeds || {};
+  const feedKeys = Object.keys(feeds);
+  $('feedstrip').innerHTML = feedKeys.length
+    ? feedKeys.map(ex=>feedPill(ex, feeds[ex])).join('')
+    : '<span class="feedpill">No live feeds yet — add a game to connect</span>';
+
   const grid = $('grid');
   $('gridEmpty').classList.toggle('hidden', state.games.length>0);
   grid.innerHTML = state.games.map(cardHtml).join('');
-  state.games.forEach(g => drawSpark('spark-'+g.game_id, g.equity_curve, Number(g.total_pnl)>=0));
+  state.games.forEach(g => {
+    drawSpark('spark-'+g.game_id, g.equity_curve, Number(g.total_pnl)>=0);
+    (g.market_prices||[]).forEach(m => {
+      drawMiniSpark('mspark-'+g.game_id+'-'+m.market_id, (m.history||[]).map(Number));
+    });
+  });
 }
 
 function decisionRow(d){
@@ -415,19 +509,35 @@ function decisionRow(d){
     <span class="tnum" style="color:var(--muted)">${d.time}</span></div>`;
 }
 
-function priceRow(m){
-  const pct = m.last!=null ? Math.round(+m.last*100) : (m.bid!=null&&m.ask!=null ? Math.round((+m.bid+ +m.ask)/2*100) : null);
+function priceRow(m, gid){
+  const key = gid+':'+m.market_id;
+  const curr = m.last!=null ? +m.last : null;
+  const prev = lastPrices[key];
+  let flashCls = '';
+  if(curr!=null && prev!=null && curr!==prev) flashCls = curr>prev ? ' flashup' : ' flashdown';
+  if(curr!=null) lastPrices[key] = curr;
+
+  const pct = curr!=null ? Math.round(curr*100) : (m.bid!=null&&m.ask!=null ? Math.round((+m.bid+ +m.ask)/2*100) : null);
   const bidAsk = (m.bid!=null && m.ask!=null) ? `<span style="color:var(--muted)">${Math.round(+m.bid*100)}¢/${Math.round(+m.ask*100)}¢</span>` : '';
-  return `<div class="pricerow"><span class="pname">${esc(m.name).slice(0,26)}</span>
-    ${bidAsk}<span class="pricepct">${pct!=null?pct+'%':'—'}</span></div>`;
+  const fresh = freshness(m.updated_ago_s);
+  const sideTag = m.side === 'no' ? '<span class="sidetag no">NO</span>' : '';
+  return `<div class="pricerow${flashCls}">
+    <span class="pname">${sideTag}${esc(m.name).slice(0,20)}</span>
+    <canvas class="minispark" id="mspark-${esc(gid)}-${esc(m.market_id)}"></canvas>
+    ${bidAsk}<span class="pricepct">${pct!=null?pct+'%':'—'}</span>
+    <span class="freshness ${fresh.cls}" title="${m.updated_ago_s!=null?'last update '+fmtAgo(m.updated_ago_s):'no data yet'}">${fresh.text}</span>
+  </div>`;
 }
 
 function cardHtml(g){
+  const gid = g.game_id;
   const posRows = g.positions.length ? g.positions.map(p=>`
-    <tr><td>${esc(p.name||p.symbol).slice(0,22)}</td><td class="tnum">${(+p.qty).toFixed(1)}</td>
+    <tr><td>${esc(p.name||p.symbol).slice(0,20)}</td>
+    <td><span class="sidetag ${p.side==='no'?'no':'yes'}">${(p.side||'yes').toUpperCase()}</span></td>
+    <td class="tnum">${(+p.qty).toFixed(1)}</td>
     <td class="tnum">${(+p.avg_cost).toFixed(3)}</td><td class="tnum">${(+p.current_price).toFixed(3)}</td>
     <td class="tnum ${cls(p.unrealized_pnl)}">${fmtUsd(p.unrealized_pnl)}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="empty">No open positions</td></tr>';
+    : '<tr><td colspan="6" class="empty">No open positions</td></tr>';
   const feed = g.trades.length ? g.trades.slice().reverse().map(t=>`
     <div class="row"><span class="side ${t.side.toLowerCase()}">${t.side}</span>
     <span style="flex:1">${esc(t.name||'').slice(0,20)}</span>
@@ -437,14 +547,14 @@ function cardHtml(g){
     ? g.decisions.slice().reverse().map(decisionRow).join('')
     : '<div class="empty">No decisions yet — waiting on the next price tick.</div>';
   const prices = g.market_prices && g.market_prices.length
-    ? g.market_prices.map(priceRow).join('')
+    ? g.market_prices.map(m=>priceRow(m, gid)).join('')
     : '<div class="empty">No live prices yet.</div>';
   const mkOpts = g.markets.map(m=>`<option value="${m.market_id}">${esc(m.name||m.market_id).slice(0,30)}</option>`).join('');
   const botOn = g.bot_active;
   const disabled = (g.status==='needs_keys'||g.status==='halted') ? 'disabled' : '';
-  const st = g.bot_status || {label:'', detail:'', as_of:''};
+  const st = g.bot_status || {label:'', detail:'', as_of:'', metrics:{}};
   const dotCls = /waiting|monitoring|holding/i.test(st.label) ? 'wait' : (botOn ? 'live' : '');
-  const gid = g.game_id;
+  const metricsHtml = renderMetrics(st.metrics);
   const sc = g.strategy_config || {};
   const edgeVal = manualState['edge-'+gid] ?? sc.min_edge;
   const confVal = manualState['conf-'+gid] ?? sc.min_confidence;
@@ -470,6 +580,7 @@ function cardHtml(g){
       </div>
       ${st.as_of?`<span class="statustime">as of ${st.as_of}</span>`:''}
     </div>
+    ${metricsHtml}
     <div class="botrow">
       <span style="font-size:12px;color:var(--muted)">Allocated ${fmtUsd(g.allocation)}</span>
       <div class="switch"><span style="font-size:12px">Bot ${botOn?'On':'Off'}</span>
@@ -478,7 +589,7 @@ function cardHtml(g){
     </div>
     <div class="section"><h4>Live market</h4>${prices}</div>
     <div class="section"><h4>Positions</h4>
-      <table class="mini"><thead><tr><th>Market</th><th>Qty</th><th>Avg</th><th>Px</th><th>P&amp;L</th></tr></thead>
+      <table class="mini"><thead><tr><th>Market</th><th>Side</th><th>Qty</th><th>Avg</th><th>Px</th><th>P&amp;L</th></tr></thead>
       <tbody>${posRows}</tbody></table></div>
     <div class="section"><h4>Buys / Sells</h4><div class="feed">${feed}</div></div>
     <div class="section"><h4>Bot reasoning</h4><div class="feed">${decisions}</div></div>
@@ -527,6 +638,21 @@ function drawSpark(id, data, up){
   ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
   ctx.fillStyle = col + '22'; ctx.fill();
+}
+
+/* small inline per-market sparkline shown next to each live price row */
+function drawMiniSpark(id, data){
+  const c = $(id); if(!c) return;
+  const w = c.clientWidth||52, h = c.clientHeight||18, dpr = window.devicePixelRatio||1;
+  c.width = w*dpr; c.height = h*dpr;
+  const ctx = c.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!data || data.length<2) return;
+  const min = Math.min(...data), max = Math.max(...data), rng = (max-min)||1;
+  const up = data[data.length-1] >= data[0];
+  const col = getComputedStyle(document.documentElement).getPropertyValue(up?'--green':'--red').trim();
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const x=i/(data.length-1)*w, y=h-2-((v-min)/rng)*(h-4); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.stroke();
 }
 
 /* ---------- websocket ---------- */

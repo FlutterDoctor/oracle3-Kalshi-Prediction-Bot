@@ -45,6 +45,7 @@ from oracle3.events.events import Event, PriceChangeEvent
 from oracle3.pricing.calibrator import OnlineCalibrator
 from oracle3.pricing.contract_scorer import ContractScorer
 from oracle3.pricing.fair_value import FairValueEstimate, FairValueEstimator
+from oracle3.pricing.fees import round_trip_fee_for_ticker
 from oracle3.pricing.premium_tracker import PremiumTracker
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
@@ -52,8 +53,6 @@ from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-_FEE_PER_SIDE = Decimal('0.005')
 
 # Position states
 _FLAT = 'flat'
@@ -92,7 +91,9 @@ class PremiumDecayStrategy(QuantStrategy):
         Max allowed premium increase before signalling reversal exit
         (default 0.02 = 2 cents above entry premium).
     fee_rate:
-        Per-side fee rate (default 0.005).
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's real
+        standard rate). Fee is nonlinear in price -- computed from the
+        real formula rather than a flat rate.
     category:
         Default category for calibration.
     default_lambda:
@@ -114,7 +115,7 @@ class PremiumDecayStrategy(QuantStrategy):
         max_hold_seconds: int = 86400,
         cooldown_seconds: int = 300,
         premium_reversal_tolerance: float = 0.02,
-        fee_rate: Decimal = _FEE_PER_SIDE,
+        fee_rate: float = 0.07,
         category: str = 'default',
         default_lambda: float = 0.10,
     ) -> None:
@@ -209,16 +210,15 @@ class PremiumDecayStrategy(QuantStrategy):
         if state == _FLAT:
             if now - self._last_trade[symbol] < self._cooldown:
                 return
-            if self._should_enter(symbol, estimate, tau):
-                await self._enter_position(
-                    symbol, ticker, trader, estimate, tau, now
-                )
+            if self._should_enter(symbol, ticker, estimate, tau):
+                await self._enter_position(symbol, ticker, trader, estimate, tau, now)
 
     # ── Entry / exit logic ────────────────────────────────────────────────
 
     def _should_enter(
         self,
         symbol: str,
+        ticker: Ticker,
         estimate: FairValueEstimate,
         tau: float,
     ) -> bool:
@@ -233,7 +233,9 @@ class PremiumDecayStrategy(QuantStrategy):
 
         # Check fee viability: expected decay must exceed round-trip fees
         expected_decay = estimate.risk_premium * (1.0 - self._exit_decay_frac)
-        fee_cost = float(self._fee_rate * 2)
+        fee_cost = round_trip_fee_for_ticker(
+            ticker, estimate.market_price, self._fee_rate
+        )
         if expected_decay < fee_cost:
             return False
 
@@ -259,7 +261,10 @@ class PremiumDecayStrategy(QuantStrategy):
         entry_premium = self._entry_premiums.get(symbol, 0.0)
 
         # Premium decayed to target
-        if entry_premium > 0 and estimate.risk_premium <= entry_premium * self._exit_decay_frac:
+        if (
+            entry_premium > 0
+            and estimate.risk_premium <= entry_premium * self._exit_decay_frac
+        ):
             return 'decay_target_reached'
 
         # Approaching resolution

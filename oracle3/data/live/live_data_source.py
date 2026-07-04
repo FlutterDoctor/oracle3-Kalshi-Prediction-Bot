@@ -33,10 +33,16 @@ class LivePolyMarketDataSource(DataSource):
         polling_interval: float = 60.0,
         orderbook_refresh_interval: float = 10.0,
         reprocess_on_start: bool = True,
+        discovery_only: bool = False,
     ):
         self.event_cache_file = event_cache_file
         self.polling_interval = polling_interval
         self.orderbook_refresh_interval = orderbook_refresh_interval
+        # When a websocket source owns live pricing, this REST source only
+        # discovers new events/markets (and emits their news) — it skips
+        # order-book fetching/diffing and the refresh loop entirely so the
+        # two sources don't fight over top-of-book state.
+        self.discovery_only = discovery_only
         self.processed_event_ids: set[str] = set()
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self.clob_client = ClobClient('https://clob.polymarket.com')
@@ -224,7 +230,7 @@ class LivePolyMarketDataSource(DataSource):
                             yes_token_id = token_ids[0] if len(token_ids) > 0 else ''
                             no_token_id = token_ids[1] if len(token_ids) > 1 else ''
 
-                            if not is_cached:
+                            if not is_cached and not self.discovery_only:
                                 # New event: fetch order books (full processing)
                                 for idx, token_id in enumerate(token_ids):
                                     complement_id = ''
@@ -247,7 +253,8 @@ class LivePolyMarketDataSource(DataSource):
                                     for ob_event in order_book_events:
                                         await self.event_queue.put(ob_event)
                             else:
-                                # Cached event: just register tickers for refresh loop
+                                # Cached event, or a paired websocket source
+                                # already owns pricing: just register tickers.
                                 for idx, token_id in enumerate(token_ids):
                                     complement_id = ''
                                     if idx == 0 and len(token_ids) > 1:
@@ -496,6 +503,8 @@ class LivePolyMarketDataSource(DataSource):
     async def start(self) -> None:
         if self._poll_task is None or self._poll_task.done():
             self._poll_task = asyncio.create_task(self._poll_data())
+        if self.discovery_only:
+            return
         if self._refresh_task is None or self._refresh_task.done():
             self._refresh_task = asyncio.create_task(self._refresh_loop())
 

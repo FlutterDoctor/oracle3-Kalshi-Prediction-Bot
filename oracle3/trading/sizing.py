@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from oracle3.pricing.fair_value import FairValueEstimate
+from oracle3.pricing.fees import kalshi_round_trip_fee
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,10 @@ class ModelInformedSizer:
     min_edge:
         Minimum net edge (after fees) to justify a trade.
         Default 0.005 = 0.5 cents per contract.
-    fee_rate:
-        Per-side fee rate (default 0.005 = 0.5%).
+    fee_multiplier:
+        Kalshi fee-schedule multiplier (default 0.07, Kalshi's standard
+        rate). Actual fee is nonlinear in price: fee_multiplier * P * (1-P)
+        per contract per side.
     max_trade_size:
         Absolute maximum trade size in dollars (default $100).
     min_trade_size:
@@ -84,7 +87,7 @@ class ModelInformedSizer:
         self,
         max_kelly_fraction: float = 0.15,
         min_edge: float = 0.005,
-        fee_rate: float = 0.005,
+        fee_multiplier: float = 0.07,
         max_trade_size: Decimal = Decimal('100'),
         min_trade_size: Decimal = Decimal('5'),
         confidence_floor: float = 0.15,
@@ -93,7 +96,7 @@ class ModelInformedSizer:
     ) -> None:
         self._max_kelly = max_kelly_fraction
         self._min_edge = min_edge
-        self._fee_rate = fee_rate
+        self._fee_multiplier = fee_multiplier
         self._max_trade = max_trade_size
         self._min_trade = min_trade_size
         self._conf_floor = confidence_floor
@@ -146,7 +149,7 @@ class ModelInformedSizer:
 
         # Compute edge
         edge = estimate.risk_premium  # positive = overpriced
-        fee_cost = 2 * self._fee_rate
+        fee_cost = kalshi_round_trip_fee(estimate.market_price, self._fee_multiplier)
         net_edge = abs(edge) - fee_cost
 
         if net_edge < self._min_edge:
@@ -169,7 +172,9 @@ class ModelInformedSizer:
             p_model = estimate.fair_value
             p_market = estimate.market_price
             # Kelly for NO bet: (p_mkt - p*) / p_mkt after fees
-            kelly_raw = (p_market - p_model - fee_cost) / p_market if p_market > 0.01 else 0.0
+            kelly_raw = (
+                (p_market - p_model - fee_cost) / p_market if p_market > 0.01 else 0.0
+            )
         else:
             # Underpriced: buy YES
             side = 'YES'
@@ -181,7 +186,11 @@ class ModelInformedSizer:
 
         # Blend with empirical win rate if available
         if win_rate is not None and win_rate > 0:
-            empirical_kelly = (win_rate * (1 / p_market - 1) - (1 - win_rate)) if p_market > 0.01 else 0.0
+            empirical_kelly = (
+                (win_rate * (1 / p_market - 1) - (1 - win_rate))
+                if p_market > 0.01
+                else 0.0
+            )
             kelly_raw = min(kelly_raw, max(empirical_kelly, 0.0))
 
         # Cap Kelly fraction

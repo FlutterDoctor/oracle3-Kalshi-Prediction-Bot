@@ -33,6 +33,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import defaultdict
 from decimal import Decimal
@@ -42,6 +43,7 @@ from oracle3.events.events import Event, OrderBookEvent, PriceChangeEvent
 from oracle3.pricing.calibrator import OnlineCalibrator
 from oracle3.pricing.contract_scorer import ContractScorer
 from oracle3.pricing.fair_value import FairValueEstimate, FairValueEstimator
+from oracle3.pricing.fees import round_trip_fee_for_ticker
 from oracle3.pricing.greeks import kelly_fraction as model_kelly
 from oracle3.strategy.quant_strategy import QuantStrategy
 from oracle3.ticker.ticker import Ticker
@@ -49,8 +51,6 @@ from oracle3.trader.trader import Trader
 from oracle3.trader.types import TradeSide
 
 logger = logging.getLogger(__name__)
-
-_FEE_PER_SIDE = Decimal('0.005')
 
 _FLAT = 'flat'
 _LONG_YES = 'long_yes'
@@ -76,8 +76,9 @@ class FairValueStrategy(QuantStrategy):
         Minimum model confidence (default 0.20).
     cooldown_seconds:
         Minimum seconds between trades on same ticker (default 120).
-    fee_rate:
-        Per-side fee rate (default 0.005).
+    fee_multiplier:
+        Kalshi fee-schedule multiplier (default 0.07); Polymarket legs use
+        the real ~0 rate automatically. Fee is nonlinear in price.
     category:
         Contract category for calibration (default 'default').
     platform:
@@ -99,7 +100,7 @@ class FairValueStrategy(QuantStrategy):
         max_hold_seconds: int = 3600,
         min_confidence: float = 0.20,
         cooldown_seconds: int = 120,
-        fee_rate: Decimal = _FEE_PER_SIDE,
+        fee_multiplier: float = 0.07,
         category: str = 'default',
         platform: str = 'polymarket',
         skip_very_high_volume: bool = True,
@@ -112,7 +113,7 @@ class FairValueStrategy(QuantStrategy):
         self._max_hold = max_hold_seconds
         self._min_conf = min_confidence
         self._cooldown = cooldown_seconds
-        self._fee_rate = fee_rate
+        self._fee_multiplier = fee_multiplier
         self._category = category
         self._skip_vhv = skip_very_high_volume
 
@@ -151,10 +152,27 @@ class FairValueStrategy(QuantStrategy):
         if cooldown_seconds is not None:
             self._cooldown = int(cooldown_seconds)
 
+    def get_status_metrics(self) -> dict[str, float | bool | str | None]:
+        """Live calibrator numbers backing the dashboard's bot-status panel."""
+        report = self._calibrator.report()
+        # staleness_hours is float('inf') until the calibrator has seen a
+        # resolved contract — inf/nan aren't valid JSON, so normalize to None
+        # (the dashboard already treats a missing value as "no data yet").
+        staleness = report.staleness_hours
+        return {
+            'category': self._category,
+            'lambda_hat': self._calibrator.get_lambda(self._category),
+            'confidence': self._calibrator.get_confidence(self._category),
+            'staleness_hours': staleness if math.isfinite(staleness) else None,
+            'has_mle': report.has_mle,
+        }
+
     def _hold(self, symbol: str, estimate: FairValueEstimate, reasoning: str) -> None:
         """Record why the strategy chose not to act this tick."""
         self.record_decision(
-            ticker_name=symbol, action='HOLD', executed=False,
+            ticker_name=symbol,
+            action='HOLD',
+            executed=False,
             confidence=estimate.confidence,
             reasoning=reasoning,
             signal_values={
@@ -199,7 +217,8 @@ class FairValueStrategy(QuantStrategy):
                 await self._exit(symbol, ticker, trader, estimate, now)
             else:
                 self._hold(
-                    symbol, estimate,
+                    symbol,
+                    estimate,
                     f'holding {state}: premium {estimate.risk_premium:.4f} still favorable',
                 )
             return
@@ -211,32 +230,43 @@ class FairValueStrategy(QuantStrategy):
             return
         if estimate.confidence < self._min_conf:
             self._hold(
-                symbol, estimate,
+                symbol,
+                estimate,
                 f'confidence {estimate.confidence:.2f} < min {self._min_conf:.2f}',
             )
             return
         if self._skip_vhv and estimate.volume_tier == 'very_high':
             self._hold(
-                symbol, estimate,
+                symbol,
+                estimate,
                 'skipped: very-high-volume tier, premium already competed away',
             )
             return
         edge = abs(estimate.risk_premium)
-        net_edge = edge - 2 * float(self._fee_rate)
+        net_edge = edge - round_trip_fee_for_ticker(
+            ticker, estimate.market_price, self._fee_multiplier
+        )
         if net_edge >= self._min_edge:
             await self._enter(symbol, ticker, trader, estimate, now)
         else:
             self._hold(
-                symbol, estimate,
+                symbol,
+                estimate,
                 f'net edge {net_edge:.4f} < min {self._min_edge:.4f}',
             )
 
     async def _enter(
-        self, symbol: str, ticker: Ticker, trader: Trader,
-        estimate: FairValueEstimate, now: float,
+        self,
+        symbol: str,
+        ticker: Ticker,
+        trader: Trader,
+        estimate: FairValueEstimate,
+        now: float,
     ) -> None:
         # Use model Kelly for sizing
-        kelly = model_kelly(estimate.market_price, estimate.lambda_adjusted, float(self._fee_rate))
+        kelly = model_kelly(
+            estimate.market_price, estimate.lambda_adjusted, self._fee_multiplier
+        )
         kelly_capped = min(abs(kelly), self._max_kelly)
         size = self._base_size * Decimal(str(max(kelly_capped, 0.01)))
         size = min(size, Decimal('100'))
@@ -264,14 +294,19 @@ class FairValueStrategy(QuantStrategy):
             self._entry_estimates[symbol] = estimate
             self._last_trade[symbol] = now
 
+        reasoning = (
+            f'fv={estimate.fair_value:.3f} mkt={estimate.market_price:.3f} '
+            f'prem={estimate.risk_premium:.4f} λ={estimate.lambda_adjusted:.3f} '
+            f'kelly={kelly_capped:.3f} tier={estimate.volume_tier}'
+        )
+        if not executed and result.failure_detail:
+            reasoning += f' [blocked: {result.failure_detail}]'
         self.record_decision(
-            ticker_name=symbol, action=action, executed=executed,
+            ticker_name=symbol,
+            action=action,
+            executed=executed,
             confidence=estimate.confidence,
-            reasoning=(
-                f'fv={estimate.fair_value:.3f} mkt={estimate.market_price:.3f} '
-                f'prem={estimate.risk_premium:.4f} λ={estimate.lambda_adjusted:.3f} '
-                f'kelly={kelly_capped:.3f} tier={estimate.volume_tier}'
-            ),
+            reasoning=reasoning,
             signal_values={
                 'fair_value': estimate.fair_value,
                 'market_price': estimate.market_price,
@@ -283,8 +318,12 @@ class FairValueStrategy(QuantStrategy):
         )
 
     async def _exit(
-        self, symbol: str, ticker: Ticker, trader: Trader,
-        estimate: FairValueEstimate, now: float,
+        self,
+        symbol: str,
+        ticker: Ticker,
+        trader: Trader,
+        estimate: FairValueEstimate,
+        now: float,
     ) -> None:
         state = self._positions[symbol]
         if state == _LONG_NO:
@@ -304,14 +343,21 @@ class FairValueStrategy(QuantStrategy):
             self._entry_estimates.pop(symbol, None)
             self._last_trade[symbol] = now
 
+        reasoning = f'Exit: prem={estimate.risk_premium:.4f}'
+        if not executed and result.failure_detail:
+            reasoning += f' [blocked: {result.failure_detail}]'
         self.record_decision(
-            ticker_name=symbol, action=f'CLOSE_{state.upper()}', executed=executed,
+            ticker_name=symbol,
+            action=f'CLOSE_{state.upper()}',
+            executed=executed,
             confidence=estimate.confidence,
-            reasoning=f'Exit: prem={estimate.risk_premium:.4f}',
+            reasoning=reasoning,
             signal_values={'risk_premium': estimate.risk_premium},
         )
 
-    def _should_exit(self, symbol: str, estimate: FairValueEstimate, now: float) -> bool:
+    def _should_exit(
+        self, symbol: str, estimate: FairValueEstimate, now: float
+    ) -> bool:
         if abs(estimate.risk_premium) < self._exit_edge:
             return True
         if now - self._entry_times.get(symbol, now) > self._max_hold:

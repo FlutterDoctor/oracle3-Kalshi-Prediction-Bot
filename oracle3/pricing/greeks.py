@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 
 from oracle3.pricing.distortion import _norm_cdf, _norm_ppf
+from oracle3.pricing.fees import kalshi_round_trip_fee
 
 _EPS = 1e-10
 _LO = _EPS
@@ -153,7 +154,7 @@ def edge_decay_rate(p_physical: float, lam: float, dlambda_dt: float) -> float:
 def kelly_fraction(
     p_market: float,
     lam: float,
-    fee_rate: float = 0.005,
+    fee_multiplier: float = 0.07,
 ) -> float:
     """Kelly-optimal fraction for a single Wang-model trade.
 
@@ -175,7 +176,7 @@ def kelly_fraction(
     """
     p_mkt = _clamp(p_market)
     p_star = _norm_cdf(_norm_ppf(p_mkt) - lam)
-    fee_cost = 2 * fee_rate
+    fee_cost = kalshi_round_trip_fee(p_mkt, fee_multiplier)
 
     edge = p_star - p_mkt  # negative = overpriced (sell / buy NO)
 
@@ -210,15 +211,17 @@ def compute_greeks_table(
     for p_mkt in prices:
         p_mkt_c = _clamp(p_mkt)
         p_star = _norm_cdf(_norm_ppf(p_mkt_c) - lam)
-        results.append({
-            'p_market': p_mkt,
-            'p_physical': p_star,
-            'premium': p_mkt_c - p_star,
-            'premium_ratio': premium_ratio(p_star, lam),
-            'delta_lambda': delta_lambda(p_star, lam),
-            'delta_physical': delta_physical(p_star, lam),
-            'gamma_lambda': gamma_lambda(p_star, lam),
-            'kelly': kelly_fraction(p_mkt, lam),
-            'implied_edge': implied_edge(p_mkt, lam),
-        })
+        results.append(
+            {
+                'p_market': p_mkt,
+                'p_physical': p_star,
+                'premium': p_mkt_c - p_star,
+                'premium_ratio': premium_ratio(p_star, lam),
+                'delta_lambda': delta_lambda(p_star, lam),
+                'delta_physical': delta_physical(p_star, lam),
+                'gamma_lambda': gamma_lambda(p_star, lam),
+                'kelly': kelly_fraction(p_mkt, lam),
+                'implied_edge': implied_edge(p_mkt, lam),
+            }
+        )
     return results
